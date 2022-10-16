@@ -1,5 +1,6 @@
 dataset: Yelp18_m1
 root: ../../data
+num_workers: 5
 epochs: 100
 weight_decay: 1.e-8
 learning_rate: 1.e-4

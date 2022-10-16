@@ -84,12 +84,10 @@ class LightGCN(RecSysArch):
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
 
         if self.training: # Batch
-            users, items = self.broadcast(
-                users[self.User.name], items[self.Item.name]
-            )
-            userFeats = userFeats[users] # B x n x D
+            users, items = users[self.User.name], items[self.Item.name]
+            userFeats = userFeats[users] # B x 1 x D
             itemFeats = itemFeats[items] # B x n x D
-            userEmbs = self.User.look_up(users) # B x n x D
+            userEmbs = self.User.look_up(users) # B x 1 x D
             itemEmbs = self.Item.look_up(items) # B x n x D
             return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
         else:
@@ -102,7 +100,7 @@ class CoachForLightGCN(Coach):
 
     def reg_loss(self, userEmbds, itemEmbds):
         userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum() * 2
+        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
         loss = loss / userEmbds.size(0)
         return loss / 2
 
