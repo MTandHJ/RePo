@@ -1,6 +1,6 @@
 
 
-## LightGCN
+# LightGCN
 
 > [He X., Deng K., Wang X., Li Y., Zhang Y. and Wang M. LightGCN: simplifying and powering graph convolution network for recommendation. In International ACM SIGIR Conference on Research and Development in Information Retrieval (SIGIR), 2020.](http://arxiv.org/abs/2002.02126)
 
