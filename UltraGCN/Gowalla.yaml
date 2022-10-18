@@ -1,6 +1,6 @@
 dataset: Gowalla_m1
 root: ../../data
-num_workers: 0
+num_workers: 4
 embedding_dim: 64
 num_negs: 1500
 num_neighbors: 10

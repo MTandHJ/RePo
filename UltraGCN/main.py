@@ -32,6 +32,7 @@ cfg.add_argument("--w4", type=float, default=1.)
 cfg.set_defaults(
     description="UltraGCN",
     root="../../data",
+    num_workers=4,
     dataset='Gowalla_m1',
     epochs=2000,
     batch_size=512,
@@ -88,13 +89,17 @@ class UltraGCN(RecSysArch):
         G = A.T @ A # N x N
         # G.setdiag(0.)
         degs = G.sum(axis=1).squeeze()
-        rowBeta = (degs + 1).sqrt() / degs
-        colBeta = (degs + 1).pow(-0.5)
+        rowBeta = np.sqrt((degs + 1)) / degs
+        colBeta = 1 / np.sqrt(degs + 1)
         rowBeta[np.isinf(rowBeta)] = 0.
         colBeta[np.isinf(colBeta)] = 0.
-        G = (rowBeta * G * colBeta).tocsr()
-        G = torch.sparse_csr_tensor(
-            G.indptr, G.indices, G.data
+        G = rowBeta.reshape(-1, 1) * G * colBeta
+        rows = torch.from_numpy(G.row).long()
+        cols = torch.from_numpy(G.col).long()
+        vals = torch.from_numpy(G.data)
+        indices = torch.stack((rows, cols), dim=0)
+        G = torch.sparse_coo_tensor(
+            indices, vals, size=(self.Item.count, self.Item.count)
         )
         values, indices = torch.topk(G.to_dense(), cfg.num_neighbors, dim=-1)
 
@@ -133,8 +138,7 @@ class UltraGCN(RecSysArch):
             reduction='none'
         ).mean(dim=-1)
 
-        return (loss_pos + loss_neg * cfg.negative_weight).sum()
-
+        return (loss_pos + loss_neg * cfg.neg_weight).sum()
 
     def constraint_for_item_item(
         self, users: torch.Tensor, items: torch.Tensor
@@ -144,10 +148,10 @@ class UltraGCN(RecSysArch):
         neighbors = self.Item.look_up(
             self.itemIndices[posItems]
         ) # return top-K neighbors, B x K x D
-        weights = self.itemWeights[posItems]
+        weights = self.itemWeights[posItems.flatten()]
 
         scores = torch.mul(userEmbds, neighbors).sum(dim=-1)
-        loss = weights * scores.sigmoid().log().neg()
+        loss = - weights * scores.sigmoid().log()
         return loss.sum()
 
     def regularize(self):
@@ -168,12 +172,12 @@ class UltraGCN(RecSysArch):
                         + self.regularize() * cfg.norm_weight
             return loss
         else:
-            userEmbds = self.User.look_up(users).squeeze() # B x D
-            itemEmbds = self.Item.weight # N x D
-            return torch.mm(userEmbds, itemEmbds) # B x N
+            userEmbds = self.User.embeddings.weight # N x D
+            itemEmbds = self.Item.embeddings.weight # M x D
+            return userEmbds, itemEmbds
 
 
-class CoachForLightGCN(Coach):
+class CoachForUltraGCN(Coach):
 
 
     def reg_loss(self, userEmbds, itemEmbds):
@@ -193,7 +197,7 @@ class CoachForLightGCN(Coach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=self.cfg.batch_size, mode="mean", prefix='train', pool=['LOSS'])
+            self.monitor(loss.item(), n=self.cfg.batch_size, mode="sum", prefix='train', pool=['LOSS'])
 
     def evaluate(self, prefix: str = 'valid'):
         User = self.fields[USER, ID]
@@ -225,7 +229,7 @@ def main():
         basepipe = AmazonBooks_m1(cfg.root)
     else:
         raise ValueError("Dataset should be Gowalla_m1, Yelp18_m1 or AmazonBooks_m1")
-    trainpipe = basepipe.shard_().negatives_for_train_(num_negatives=cfg.num_negs, unseen_only=False).tensor_().split_(cfg.batch_size)
+    trainpipe = basepipe.split_(cfg.batch_size).shard_().negatives_for_train_(num_negatives=cfg.num_negs, unseen_only=False).tensor_()
     validpipe = basepipe.trisample_(batch_size=cfg.batch_size).shard_().tensor_()
     dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
 
@@ -235,7 +239,7 @@ def main():
     )
     User, Item = tokenizer[USER], tokenizer[ITEM]
     model = UltraGCN(
-        tokenizer, basepipe.train().to_graph(User, Item)
+        tokenizer, basepipe.train().to_bigraph(User, Item)
     )
 
     if cfg.optimizer == 'sgd':
@@ -250,7 +254,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
         )
 
-    coach = CoachForLightGCN(
+    coach = CoachForUltraGCN(
         model=model,
         dataset=dataset,
         criterion=None,
