@@ -9,7 +9,7 @@ from torch_geometric.nn import LGConv
 
 from freerec.parser import Parser
 from freerec.launcher import Coach
-from freerec.models import LightGCN, RecSysArch
+from freerec.models import RecSysArch
 from freerec.criterions import BPRLoss
 from freerec.data.datasets import Gowalla_m1, Yelp18_m1, AmazonBooks_m1
 from freerec.data.fields import Tokenizer
