@@ -1,0 +1,13 @@
+|  Prefix  |   Metric   |   Best   |   @Epoch   |   Img   |
+| :-------: | :-------: | :-------: | :-------: | :-------: |
+|  train  |   LOSS   |   0.18706514453368328   |   1989   |   ![](trainLOSS.png)   |
+|  valid  |   LOSS   |   -1   |   -1   |   ![](validLOSS.png)   |
+|  valid  |   RECALL@10   |   0.1314199489785084   |   1930   |   ![](validRECALL@10.png)   |
+|  valid  |   RECALL@20   |   0.18594993826984296   |   1785   |   ![](validRECALL@20.png)   |
+|  valid  |   NDCG@10   |   0.1425038127469293   |   1930   |   ![](validNDCG@10.png)   |
+|  valid  |   NDCG@20   |   0.15795046935202695   |   625   |   ![](validNDCG@20.png)   |
+|  test  |   LOSS   |   -1   |   -1   |   ![](testLOSS.png)   |
+|  test  |   RECALL@10   |   0.13106588190946106   |   0   |   ![](testRECALL@10.png)   |
+|  test  |   RECALL@20   |   0.1854457945755477   |   0   |   ![](testRECALL@20.png)   |
+|  test  |   NDCG@10   |   0.14234240142151566   |   0   |   ![](testNDCG@10.png)   |
+|  test  |   NDCG@20   |   0.1577080975843934   |   0   |   ![](testNDCG@20.png)   |

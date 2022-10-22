@@ -13,7 +13,7 @@ from freeplot.utils import export_pickle, import_pickle
 from freerec.parser import Parser
 from freerec.launcher import Coach
 from freerec.models import RecSysArch
-from freerec.criterions import BPRLoss, BaseCriterion
+from freerec.criterions import BaseCriterion
 from freerec.data.datasets import Gowalla_m1, Yelp18_m1, AmazonBooks_m1
 from freerec.data.fields import Tokenizer
 from freerec.data.tags import USER, ITEM, ID
@@ -56,7 +56,8 @@ class GDE(RecSysArch):
 
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
 
-        # self.dropout = torch.nn.Dropout(cfg.dropout_rate) TODO: tricky
+        self.dropout = torch.nn.Dropout(cfg.dropout_rate)
+        self.load()
 
         self.initialize()
 
@@ -109,10 +110,13 @@ class GDE(RecSysArch):
         else:
             raise ValueError("Only 'smooth' or 'both' type supported !")
 
-        self.register_buffer("userVals", userVals)
-        self.register_buffer("userVecs", userVecs)
-        self.register_buffer("itemVals", itemVals)
-        self.register_buffer("itemVecs", itemVecs)
+        # self.register_buffer("userVals", self.weight_filter(userVals))
+        # self.register_buffer("userVecs", userVecs)
+        # self.register_buffer("itemVals", self.weight_filter(itemVals))
+        # self.register_buffer("itemVecs", itemVecs)
+
+        self.register_buffer("A_u", (userVecs * self.weight_filter(userVals)).mm(userVecs.t()))
+        self.register_buffer("A_i", (itemVecs * self.weight_filter(itemVals)).mm(itemVecs.t()))
 
     @timemeter("GDE/lobpcg")
     def lobpcg(self, A, k: int, largest: bool = True, niter: int = 5):
@@ -123,9 +127,9 @@ class GDE(RecSysArch):
         indices = torch.stack((rows, cols), dim=0)
         A = torch.sparse_coo_tensor(
             indices, vals, size=A.shape
-        ).to(self.device)
+        )
         vals, vecs =  torch.lobpcg(A, k=k, largest=largest, niter=niter)
-        return vals.cpu(), vecs.cpu()
+        return vals, vecs
 
     def preprocess(self):
         R = sp.lil_array(to_scipy_sparse_matrix(
@@ -180,23 +184,25 @@ class GDE(RecSysArch):
     ):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
-        userFeats = (self.userVecs * self.userVals) @ (self.userVecs.t() @ userEmbs)
-        itemFeats = (self.itemVecs * self.itemVals) @ (self.itemVecs.t() @ itemEmbs)
 
         if self.training:
             users, items = users[self.User.name], items[self.Item.name]
-            userFeats = userFeats[users] # B x 1 x D
-            itemFeats = itemFeats[items] # B x K x D
+            if cfg.dropout_rate == 0:
+                userFeats = self.A_u[users].matmul(userEmbs)
+                itemFeats = self.A_i[items].matmul(itemEmbs)
+            else:
+                userFeats = self.dropout(self.A_u[users]).matmul(userEmbs) * (1 - cfg.dropout_rate)
+                itemFeats = self.dropout(self.A_i[items]).matmul(itemEmbs) * (1 - cfg.dropout_rate)
             return (userFeats * itemFeats).sum(-1), userFeats, itemFeats
         else:
-            return userFeats, itemFeats
+            return self.A_u.mm(userEmbs), self.A_i.mm(itemEmbs)
 
 
 class AdaptiveLoss(BaseCriterion):
 
     def forward(self, scores: torch.Tensor):
         positives = scores[:, 0]
-        negatives = scores[:, 1:].sum(dim=1)
+        negatives = scores[:, 1]
         if cfg.criterion == 'adaptive':
             delta = (1 - (1 - negatives.sigmoid().clamp(max=0.99)).log10()).detach()
             out = (positives - negatives * delta).sigmoid()
@@ -270,8 +276,6 @@ def main():
     model = GDE(
         tokenizer, basepipe.train().to_bigraph(User, Item)
     )
-    model.to(cfg.device)
-    model.load()
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
