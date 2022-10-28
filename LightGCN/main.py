@@ -160,7 +160,7 @@ def main():
     )
     User, Item = tokenizer[USER], tokenizer[ITEM]
     model = LightGCN(
-        tokenizer, basepipe.train().to_graph(User, Item)
+        tokenizer, basepipe.train().to_graph(User, Item), num_layers=cfg.layers
     )
 
     if cfg.optimizer == 'sgd':
