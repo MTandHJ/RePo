@@ -43,6 +43,29 @@ cfg.set_defaults(
 cfg.compile()
 
 
+class Gowalla_m1_inv(Gowalla_m1):
+
+    def file_filter(self, filename: str):
+        if self.mode == 'train':
+            return 'test' in filename
+        else:
+            return 'train' in filename
+
+class Yelp18_m1_inv(Yelp18_m1):
+
+    def file_filter(self, filename: str):
+        if self.mode == 'train':
+            return 'test' in filename
+        else:
+            return 'train' in filename
+
+class AmazonBooks_m1_inv(AmazonBooks_m1):
+
+    def file_filter(self, filename: str):
+        if self.mode == 'train':
+            return 'test' in filename
+        else:
+            return 'train' in filename
 
 class SVDGCN(RecSysArch):
 
@@ -74,18 +97,16 @@ class SVDGCN(RecSysArch):
     def graph(self, graph: Data):
         self.__graph = graph
 
-
     def save(self, data: Dict):
         path = os.path.join("filters", cfg.dataset)
         mkdirs(path)
-        file_ = os.path.join(path, "eig_vals_vecs.pickle")
+        file_ = os.path.join(path, "u_vals_v.pickle")
         export_pickle(data, file_)
-
 
     def weight_filter(self, vals):
         return torch.exp(cfg.beta * vals)
 
-    @timemeter("GDE/load")
+    @timemeter("SVDGCN/load")
     def load(self):
         path = os.path.join("filters", cfg.dataset)
         file_ = os.path.join(path, "u_vals_v.pickle")
@@ -102,18 +123,25 @@ class SVDGCN(RecSysArch):
         self.register_buffer("V", V)
 
     def preprocess(self):
-        edge_type = self.graph.edge_types[0]
-        edge_index = self.graph[edge_type].edge_index
-        values = torch.ones(edge_index.size(1), device=edge_index.device)
+        graph = self.graph
+        R = sp.lil_array(to_scipy_sparse_matrix(
+            graph[graph.edge_types[0]].edge_index,
+            num_nodes=max(self.User.count, self.Item.count)
+        ))[:self.User.count, :self.Item.count] # N x M
+        userDegs = R.sum(axis=1).squeeze() + cfg.alpha
+        itemDegs = R.sum(axis=0).squeeze() + cfg.alpha
+        userDegs = 1 / np.sqrt(userDegs)
+        itemDegs = 1 / np.sqrt(itemDegs)
+        userDegs[np.isinf(userDegs)] = 0.
+        itemDegs[np.isinf(itemDegs)] = 0.
+        R = (userDegs.reshape(-1, 1) * R * itemDegs).tocoo()
+        rows = torch.from_numpy(R.row).long()
+        cols = torch.from_numpy(R.col).long()
+        vals = torch.from_numpy(R.data)
+        indices = torch.stack((rows, cols), dim=0)
         R = torch.sparse_coo_tensor(
-            edge_index, values, size=(self.User.count, self.Item.count)
+            indices, vals, size=R.shape
         )
-        userDegs = R.sum(axis=1).add(cfg.alpha).pow(-0.5)
-        itemDegs = R.sum(axis=0).add(cfg.alpha).pow(-0.5)
-        userDegs[torch.isinf(userDegs)] = 0.
-        itemDegs[torch.isinf(itemDegs)] = 0.
-        R = userDegs.view(-1, 1) * R * itemDegs
-        del userDegs, itemDegs
 
         U, vals, V = torch.svd_lowrank(R, q=400, niter=30)
 
@@ -121,10 +149,9 @@ class SVDGCN(RecSysArch):
         self.save(data)
         return data
 
-
     def criterion(self, x, yp, yn, weight):
-        pos = (x * yp).sum(dim=1)
-        neg = (x * yn).sum(dim=1)
+        pos = (x * yp).squeeze().sum(dim=1)
+        neg = (x * yn).squeeze().sum(dim=1)
         return F.softplus(neg - pos).mean() * weight
 
     def forward(
@@ -141,7 +168,6 @@ class SVDGCN(RecSysArch):
             loss = 0.
             for params in [(u, p, n, 1), (u, up, un, cfg.user_weight), (p, pp, pn, cfg.item_weight)]:
                 loss += self.criterion(*params)
-
             return loss, userFeats, itemFeats
         else:
             return self.FS(self.U), self.FS(self.V)
@@ -170,7 +196,7 @@ class CoachForSVDGAN(Coach):
         values = torch.ones(edge_index.size(1), device=edge_index.device)
         R = torch.sparse_coo_tensor(
             edge_index, values, size=(self.User.count, self.Item.count)
-        )
+        ).to_dense()
 
         A_u = R @ R.t()
         self.A_u = (A_u != 0).float()
@@ -186,7 +212,7 @@ class CoachForSVDGAN(Coach):
         u, p = u.unsqueeze(1), p.unsqueeze(1)
         users = torch.cat([u, up, un], dim=1) # B x 3
         items = torch.cat([p, n, pp, pn], dim=1) # B x 4
-        return {self.User.name: users.to(self.device), self.Item.name: items.to(self.device)}
+        return {self.User.name: users.to(self.device)}, {self.Item.name: items.to(self.device)}
 
     def reg_loss(self, userFeats, itemFeats):
         loss = userFeats.pow(2).sum() + itemFeats.pow(2).sum()
@@ -232,11 +258,11 @@ class CoachForSVDGAN(Coach):
 def main():
 
     if cfg.dataset == "Gowalla_m1":
-        basepipe = Gowalla_m1(cfg.root)
+        basepipe = Gowalla_m1_inv(cfg.root)
     elif cfg.dataset == "Yelp18_m1":
-        basepipe = Yelp18_m1(cfg.root)
+        basepipe = Yelp18_m1_inv(cfg.root)
     elif cfg.dataset == "AmazonBooks_m1":
-        basepipe = AmazonBooks_m1(cfg.root)
+        basepipe = AmazonBooks_m1_inv(cfg.root)
     else:
         raise ValueError("Dataset should be Gowalla_m1, Yelp18_m1 or AmazonBooks_m1")
     trainpipe = basepipe.shard_().uniform_sampling_(num_negatives=1).tensor_().split_(cfg.batch_size)
@@ -248,7 +274,7 @@ def main():
         cfg.embedding_dim, ID
     )
     User, Item = tokenizer[USER], tokenizer[ITEM]
-    model = GDE(
+    model = SVDGCN(
         tokenizer, basepipe.train().to_bigraph(User, Item)
     )
 
@@ -265,7 +291,7 @@ def main():
         )
     criterion = AdaptiveLoss()
 
-    coach = CoachForGDE(
+    coach = CoachForSVDGAN(
         model=model,
         dataset=dataset,
         criterion=criterion,
@@ -273,6 +299,7 @@ def main():
         lr_scheduler=None,
         device=cfg.device
     )
+    coach.set_sampler(basepipe.train().to_bigraph(User, Item))
     coach.compile(cfg, monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'])
     coach.fit()
 

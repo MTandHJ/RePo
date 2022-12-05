@@ -6,6 +6,7 @@ import torch
 import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 from freerec.parser import Parser
 from freerec.launcher import Coach
@@ -28,7 +29,7 @@ cfg.set_defaults(
     optimizer='adam',
     lr=1e-3,
     weight_decay=1e-4,
-    seed=2020
+    seed=1
 )
 cfg.compile()
 
@@ -60,6 +61,10 @@ class LightGCN(RecSysArch):
     def graph(self, graph: Data):
         self.__graph = graph
         T.ToSparseTensor()(self.__graph)
+        self.__graph.adj_t = gcn_norm(
+            self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
+            add_self_loops=False
+        )
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -136,7 +141,7 @@ class CoachForLightGCN(Coach):
             self.monitor(
                 preds, targets,
                 n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'PRECISION', 'RECALL', 'HITRATE']
+                pool=['NDCG', 'RECALL']
             )
 
 
