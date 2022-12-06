@@ -3,9 +3,13 @@
 from typing import Dict, Optional, Union
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import torch_geometric.transforms as T
+from torch_sparse import SparseTensor, matmul, mul, fill_diag
+from torch_sparse import sum as sparsesum
 from torch_geometric.data.data import Data
-from torch_geometric.nn import LGConv, MessagePassing
+from torch_geometric.nn import MessagePassing
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 import freerec
@@ -20,21 +24,51 @@ from freerec.data.tags import USER, ITEM, ID
 cfg = Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
+cfg.add_argument("--mess-dropout", type=float, default=0.1)
 cfg.set_defaults(
-    description="LightGCN",
+    description="NGCF",
     root="../../data",
     dataset='Gowalla_m1',
-    epochs=1000,
-    batch_size=2048,
+    epochs=400,
+    batch_size=1024,
     optimizer='adam',
-    lr=1e-3,
-    weight_decay=1e-4,
+    lr=1e-4,
+    weight_decay=1e-5,
     seed=1
 )
 cfg.compile()
 
 
-class LightGCN(RecSysArch):
+class NGCFConv(MessagePassing):
+
+    def __init__(
+        self, in_features: int, out_features: int,
+        dropout_rate: float
+    ):
+        super().__init__(aggr='add', flow='source_to_target')
+
+        self.linear1 = nn.Linear(in_features, out_features)
+        self.linear2 = nn.Linear(in_features, out_features)
+        self.act = nn.LeakyReLU()
+        self.dropout = nn.Dropout(p=dropout_rate)
+
+    def forward(self, x: torch.Tensor, adj_t: SparseTensor):
+        z = self.propagate(adj_t, x=x)
+        return F.normalize(
+            self.dropout(
+                self.act(self.linear1(z.add(x))) + self.act(self.linear2(z.mul(x)))
+            ),
+            dim=-1
+        )
+
+    def message(self, x_j: torch.Tensor) -> torch.Tensor:
+        raise NotImplementedError()
+
+    def message_and_aggregate(self, adj_t: SparseTensor, x: torch.Tensor) -> torch.Tensor:
+        return matmul(adj_t, x, reduce=self.aggr)
+        
+
+class NGCF(RecSysArch):
 
     def __init__(
         self, tokenizer: Tokenizer, 
@@ -44,12 +78,21 @@ class LightGCN(RecSysArch):
         super().__init__()
 
         self.tokenizer = tokenizer
-        self.conv = LGConv(False)
         self.num_layers = num_layers
+        self.convs = nn.ModuleList([NGCFConv(cfg.embedding_dim, cfg.embedding_dim, cfg.mess_dropout) for _ in range(num_layers)])
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
         self.graph = graph
 
         self.initialize()
+
+    def initialize(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.Embedding):
+                nn.init.xavier_normal_(m.weight)
 
     @property
     def graph(self):
@@ -61,8 +104,17 @@ class LightGCN(RecSysArch):
         T.ToSparseTensor()(self.__graph)
         self.__graph.adj_t = gcn_norm(
             self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
-            add_self_loops=False
+            add_self_loops=True
         )
+        adj_t = self.__graph.adj_t
+        if not adj_t.has_value():
+            adj_t = adj_t.fill_value(1., dtype=torch.float32)
+        adj_t = fill_diag(adj_t, 1.)
+        deg = sparsesum(adj_t, dim=1) # column sum
+        deg_inv = deg.pow_(-1.)
+        deg_inv.masked_fill_(deg_inv == float('inf'), 0.)
+        self.__graph.adj_t = mul(adj_t, deg_inv.view(-1, 1))
+        deg = sparsesum(self.__graph.adj_t, 1)
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -80,11 +132,12 @@ class LightGCN(RecSysArch):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
-        avgFeats = features / (self.num_layers + 1)
-        for _ in range(self.num_layers):
-            features = self.conv(features, self.graph.adj_t)
-            avgFeats += features / (self.num_layers + 1)
-        userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
+        allFeats = [features]
+        for conv in self.convs:
+            features = conv(features, self.graph.adj_t)
+            allFeats.append(features)
+        allFeats = torch.cat(allFeats, dim=-1)
+        userFeats, itemFeats = torch.split(allFeats, (self.User.count, self.Item.count))
 
         if self.training: # Batch
             users, items = users[self.User.name], items[self.Item.name]
@@ -92,28 +145,25 @@ class LightGCN(RecSysArch):
             itemFeats = itemFeats[items] # B x n x D
             userEmbs = self.User.look_up(users) # B x 1 x D
             itemEmbs = self.Item.look_up(items) # B x n x D
-            return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
+            return torch.mul(userFeats, itemFeats).sum(-1), userFeats, itemFeats
         else:
             return userFeats, itemFeats
 
 
+class CoachForNGCF(Coach):
 
-class CoachForLightGCN(Coach):
 
-
-    def reg_loss(self, userEmbds, itemEmbds):
-        userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
-        loss = loss / userEmbds.size(0)
-        return loss / 2
+    def reg_loss(self, userFeats: torch.Tensor, itemFeats: torch.Tensor):
+        loss = userFeats.norm() + itemFeats.norm()
+        return loss / self.cfg.batch_size
 
     def train_per_epoch(self):
         for users, items in self.dataloader:
             users = {name: val.to(self.device) for name, val in users.items()}
             items = {name: val.to(self.device) for name, val in items.items()}
 
-            preds, users, items = self.model(users, items)
-            pos, neg = preds[:, 0], preds[:, 1]
+            scores, users, items = self.model(users, items)
+            pos, neg = scores[:, 0], scores[:, 1]
             reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
             loss = self.criterion(pos, neg) + reg_loss
 
@@ -121,7 +171,7 @@ class CoachForLightGCN(Coach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
+            self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, prefix: str = 'valid'):
         User = self.fields[USER, ID]
@@ -155,7 +205,7 @@ def main():
         cfg.embedding_dim, ID
     )
     User, Item = tokenizer[USER], tokenizer[ITEM]
-    model = LightGCN(
+    model = NGCF(
         tokenizer, basepipe.train().to_graph(User, Item), num_layers=cfg.layers
     )
 
@@ -172,7 +222,7 @@ def main():
         )
     criterion = BPRLoss()
 
-    coach = CoachForLightGCN(
+    coach = CoachForNGCF(
         model=model,
         dataset=dataset,
         criterion=criterion,
