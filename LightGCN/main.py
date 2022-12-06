@@ -8,6 +8,7 @@ from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
+import freerec
 from freerec.parser import Parser
 from freerec.launcher import Coach
 from freerec.models import RecSysArch
@@ -47,9 +48,8 @@ class LightGCN(RecSysArch):
         self.tokenizer = tokenizer
         self.conv = LGConv()
         self.num_layers = num_layers
-        self.graph = graph
-
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
+        self.graph = graph
 
         self.initialize()
 
@@ -147,14 +147,7 @@ class CoachForLightGCN(Coach):
 
 def main():
 
-    if cfg.dataset == "Gowalla_m1":
-        basepipe = Gowalla_m1(cfg.root)
-    elif cfg.dataset == "Yelp18_m1":
-        basepipe = Yelp18_m1(cfg.root)
-    elif cfg.dataset == "AmazonBooks_m1":
-        basepipe = AmazonBooks_m1(cfg.root)
-    else:
-        raise ValueError("Dataset should be Gowalla_m1, Yelp18_m1 or AmazonBooks_m1")
+    basepipe = getattr(freerec.data.datasets, cfg.dataset)(cfg.root)
     trainpipe = basepipe.shard_().uniform_sampling_(num_negatives=1).tensor_().split_(cfg.batch_size)
     validpipe = basepipe.trisample_(batch_size=cfg.batch_size).shard_().tensor_()
     dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
