@@ -102,10 +102,6 @@ class NGCF(RecSysArch):
     def graph(self, graph: Data):
         self.__graph = graph
         T.ToSparseTensor()(self.__graph)
-        self.__graph.adj_t = gcn_norm(
-            self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
-            add_self_loops=True
-        )
         adj_t = self.__graph.adj_t
         if not adj_t.has_value():
             adj_t = adj_t.fill_value(1., dtype=torch.float32)
