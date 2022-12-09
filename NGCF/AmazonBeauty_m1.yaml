@@ -1,0 +1,10 @@
+dataset: AmazonBeauty_m1
+root: ../../data
+embedding_dim: 64
+epochs: 135
+batch_size: 1024
+mess_dropout: 0.1
+lr: 1.e-3
+weight_decay: 1.e-4
+layers: 3
+seed: 1

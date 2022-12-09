@@ -1,0 +1,11 @@
+dataset: AmazonElectronics_m1
+root: ../../data
+embedding_dim: 64
+layers: 2
+epochs: 110
+batch_size: 1024
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-4
+mess_dropout: 0.1
+seed: 1

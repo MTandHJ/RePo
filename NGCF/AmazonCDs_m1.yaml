@@ -1,0 +1,11 @@
+dataset: AmazonCDs_m1
+root: ../../data
+embedding_dim: 64
+layers: 4
+epochs: 280
+batch_size: 1024
+optimizer: adam
+lr: 1.e-4
+weight_decay: 1.e-4
+mess_dropout: 0.
+seed: 1
