@@ -1,0 +1,10 @@
+root: ../../data
+dataset: Gowalla_m1
+lr: 15
+weight_decay: 1.e-4
+alpha: 0
+beta: 4
+req_vec: 500
+batch_size: 2048
+epochs: 25
+seed: 1

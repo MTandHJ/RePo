@@ -1,0 +1,9 @@
+root: ../../data
+dataset: Yelp18_m1
+lr: 15
+weight_decay: 1.e-4
+alpha: 5
+beta: 4
+req_vec: 300
+epochs: 70
+seed: 1

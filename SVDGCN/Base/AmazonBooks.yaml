@@ -1,0 +1,11 @@
+root: ../../data
+dataset: AmazonBooks_m1
+lr: 10
+weight_decay: 1.e-4
+alpha: 20
+beta: 2
+req_vec: 600
+epochs: 15
+batch_size: 8192
+seed: 1
+

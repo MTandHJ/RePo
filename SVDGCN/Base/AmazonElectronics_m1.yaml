@@ -1,0 +1,10 @@
+root: ../../data
+dataset: AmazonElectronics_m1
+lr: 10
+weight_decay: 1.e-4
+alpha: 0
+beta: 3
+req_vec: 50
+epochs: 5
+batch_size: 2048
+seed: 1
