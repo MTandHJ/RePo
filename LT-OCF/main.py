@@ -251,13 +251,11 @@ def main():
             params,
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
-            weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             params,
             betas=(cfg.beta1, cfg.beta2),
-            weight_decay=cfg.weight_decay
         )
     criterion = BPRLoss()
 
