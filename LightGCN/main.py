@@ -147,7 +147,7 @@ def main():
 
     basepipe = getattr(freerec.data.datasets, cfg.dataset)(cfg.root)
     trainpipe = basepipe.shard_().uniform_sampling_(num_negatives=1).tensor_().split_(cfg.batch_size)
-    validpipe = basepipe.trisample_(batch_size=cfg.batch_size).shard_().tensor_()
+    validpipe = basepipe.trisample_(batch_size=2048).shard_().tensor_()
     dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
 
     tokenizer = Tokenizer(basepipe.fields.groupby(ID))
