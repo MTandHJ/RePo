@@ -1,0 +1,11 @@
+root: ../../data
+dataset: MovieLens1M_m2
+lr: 20
+weight_decay: 1.e-4
+alpha: 10
+beta: 4
+req_vec: 100
+epochs: 9
+batch_size: 2048
+seed: 1
+

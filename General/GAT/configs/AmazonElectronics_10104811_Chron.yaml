@@ -1,0 +1,11 @@
+dataset: AmazonElectronics_10104811_Chron
+root: ../../data
+embedding_dim: 64
+epochs: 500
+batch_size: 2048
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-4
+layers: 4
+heads: 1
+dropout_rate: 0.

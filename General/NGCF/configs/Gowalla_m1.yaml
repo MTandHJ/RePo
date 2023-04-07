@@ -1,0 +1,9 @@
+dataset: Gowalla_m1
+root: ../../data
+embedding_dim: 64
+layers: 3
+lr: 1.e-4
+weight_decay: 1.e-5
+batch_size: 1024
+epochs: 400
+mess_dropout: 0.1

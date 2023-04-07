@@ -1,0 +1,16 @@
+dataset: Gowalla_m1
+root: ../../data
+optimizer: sgd
+lr: 0.03
+weight_decay: 0.01
+dropout_rate: 0.1
+batch_size: 256
+epochs: 400
+filter_type: smooth
+embedding_dim: 64
+smooth_ratio: 0.1
+rough_ratio: 0.
+beta: 5.
+criterion: adaptive
+
+

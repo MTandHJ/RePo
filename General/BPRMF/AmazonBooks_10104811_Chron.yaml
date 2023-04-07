@@ -1,0 +1,9 @@
+dataset: AmazonBooks_10104811_Chron
+root: ../../data
+embedding_dim: 64
+epochs: 1000
+batch_size: 8192
+optimizer: adam
+lr: 1.e-3
+weight_decay: 0.
+seed: 1

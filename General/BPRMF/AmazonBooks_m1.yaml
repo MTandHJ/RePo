@@ -1,0 +1,9 @@
+root: ../../data
+dataset: AmazonBooks_m1
+embedding_dim: 64
+epochs: 375
+batch_size: 8192
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-8
+seed: 1

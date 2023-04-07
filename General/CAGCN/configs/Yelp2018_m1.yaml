@@ -1,0 +1,12 @@
+dataset: Yelp2018_m1
+root: ../../data
+embedding_dim: 64
+layers: 3
+epochs: 1000
+batch_size: 2048
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-4
+trend_type: jc
+trend_coeff: 1
+fusion: 'FALSE'

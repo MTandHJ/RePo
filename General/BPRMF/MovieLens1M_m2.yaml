@@ -1,0 +1,9 @@
+root: ../../data
+dataset: MovieLens1M_m2
+embedding_dim: 64
+epochs: 430
+batch_size: 2048
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-5
+seed: 1

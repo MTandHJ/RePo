@@ -1,0 +1,11 @@
+dataset: MovieLens1M_m2
+root: ../../data
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-8
+embedding_dim: 64
+dropout_rate: 0.1
+epochs: 500
+heads: 8
+layers: 2
+seed: 1
