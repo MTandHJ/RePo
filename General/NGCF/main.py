@@ -22,7 +22,7 @@ from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
 
 
-freerec.decalre(version="0.2.5")
+freerec.decalre(version="0.3.1")
 
 
 cfg = Parser()
@@ -166,7 +166,7 @@ class CoachForNGCF(Coach):
         loss = userFeats.norm() + itemFeats.norm()
         return loss / self.cfg.batch_size
 
-    def train_per_epoch(self):
+    def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
             preds, users, items = self.model(users, positives, negatives)
@@ -180,7 +180,7 @@ class CoachForNGCF(Coach):
             
             self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, prefix: str = 'valid'):
+    def evaluate(self, epoch: int, prefix: str = 'valid'):
         userFeats, itemFeats = self.model.recommend()
         for user, unseen, seen in self.dataloader:
             users = user.to(self.device).data
