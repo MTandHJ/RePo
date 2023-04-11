@@ -3,11 +3,11 @@
 # SVD-GCN
 
 
-[[official-code](https://github.com/gusye1234/LightGCN-PyTorch)])]
+[official-code](https://github.com/tanatosuu/svd_gcn)
 
 ## Usage
 
-`version: 0.1.1`
+`version: 0.3.1`
 
 ### Gowalla
 
