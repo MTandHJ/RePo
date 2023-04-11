@@ -9,9 +9,9 @@ num_neighbors: 10
 unseen_only: 'False'
 num_negs: 200
 neg_weight: 200
-norm_weight: 1.e-4
+norm_weight: 5.e-4
 item_weight: 0.
-init_weight: 1.e-4
+init_weight: 1.e-3
 w1: 1.e-7
 w2: 1.
 w3: 1.e-7

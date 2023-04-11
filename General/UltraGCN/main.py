@@ -41,14 +41,16 @@ cfg.add_argument("--w4", type=float, default=1.)
 
 cfg.set_defaults(
     description="UltraGCN",
-    root="../../data",
-    num_workers=4,
-    dataset='Gowalla_10100811_Chron',
+    # root="../../data",
+    root="../../../data",
+    num_workers=0,
+    # dataset='Gowalla_10100811_Chron',
+    dataset='AmazonElectronics_m1',
     epochs=300,
     batch_size=512,
     optimizer='adam',
     lr=1e-4,
-    seed=1
+    seed=1,
 )
 cfg.compile()
 
@@ -138,10 +140,10 @@ class UltraGCN(RecSysArch):
         scores = torch.mul(userEmbds, itemEmbds).sum(-1) # B x (1 + K)
         weights = self.userBeta[users] * self.itemBeta[items] # B x (1 + K)
 
-        positives = scores[:, [0]]
+        positives = scores[:, 0]
         loss_pos = F.binary_cross_entropy_with_logits(
             positives, torch.ones_like(positives, dtype=torch.float32), 
-            cfg.w1 + cfg.w2 * weights[:, [0]], 
+            cfg.w1 + cfg.w2 * weights[:, 0], 
             reduction='none'
         )
 
@@ -194,13 +196,8 @@ class UltraGCN(RecSysArch):
 
 class CoachForUltraGCN(Coach):
 
-    # def sample_negs_from_all(self, users, low, high):
-    #     return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
-
     def sample_negs_from_all(self, users, low, high):
-        negs = np.random.choice(np.arange(low, high), (len(users), cfg.num_negs), replace=True)
-        negs = torch.from_numpy(negs).to(self.device).long()
-        return negs
+        return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
 
     def train_per_epoch(self, epoch: int):
         Item = self.fields[ITEM, ID]
@@ -247,12 +244,14 @@ class RandomShuffledSource(BaseProcessor):
     def __init__(self, source) -> None:
         super().__init__(None)
 
-        self.source = list(source)
-        self.datasize = len(self.source)
+        self.source = source
+        self._rng = partial(
+            random.shuffle, x=self.source
+        )
 
     def __iter__(self):
-        for i in torch.randperm(self.datasize):
-            yield self.source[i]
+        self._rng()
+        yield from self.source
 
 
 @dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")

@@ -5,12 +5,12 @@ lr: 1.e-3
 batch_size: 1024
 optimizer: adam
 embedding_dim: 64
-num_negs: 1000
+num_neighbors: 10
 unseen_only: 'False'
-num_neighbors: 1000
-neg_weight: 500
+num_negs: 1000
+neg_weight: 300
 norm_weight: 1.e-4
-item_weight: 1.
+item_weight: 2.
 init_weight: 1.e-4
 w1: 1.e-7
 w2: 1.
