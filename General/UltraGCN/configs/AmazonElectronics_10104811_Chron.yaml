@@ -8,9 +8,9 @@ embedding_dim: 64
 num_neighbors: 1000
 unseen_only: 'False'
 num_negs: 75
-neg_weight: 75
-norm_weight: 5.e-5
-item_weight: 1.e-7
+neg_weight: 100
+norm_weight: 1.e-5
+item_weight: 5.
 init_weight: 1.e-3
 w1: 1.e-7
 w2: 1.

@@ -53,7 +53,6 @@ cfg.set_defaults(
 cfg.compile()
 
 
-
 class UltraGCN(RecSysArch):
 
     def __init__(
@@ -94,8 +93,8 @@ class UltraGCN(RecSysArch):
         userBeta[torch.isinf(userBeta)].fill_(0.)
         itemBeta[torch.isinf(itemBeta)].fill_(0.)
 
-        self.register_buffer('userBeta', userBeta)
-        self.register_buffer('itemBeta', itemBeta)
+        self.register_buffer('userBeta', userBeta.flatten())
+        self.register_buffer('itemBeta', itemBeta.flatten())
 
     def beta_for_item_item(self):
         A = sp.lil_array(to_scipy_sparse_matrix(
@@ -195,8 +194,13 @@ class UltraGCN(RecSysArch):
 
 class CoachForUltraGCN(Coach):
 
+    # def sample_negs_from_all(self, users, low, high):
+    #     return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
+
     def sample_negs_from_all(self, users, low, high):
-        return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
+        negs = np.random.choice(np.arange(low, high), (len(users), cfg.num_negs), replace=True)
+        negs = torch.from_numpy(negs).to(self.device).long()
+        return negs
 
     def train_per_epoch(self, epoch: int):
         Item = self.fields[ITEM, ID]
@@ -210,7 +214,7 @@ class CoachForUltraGCN(Coach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
+            self.monitor(loss.item(), n=users.size(0), mode="sum", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
         userFeats, itemFeats = self.model.recommend()
@@ -244,13 +248,11 @@ class RandomShuffledSource(BaseProcessor):
         super().__init__(None)
 
         self.source = list(source)
-        self._rng = partial(
-            random.shuffle, x=self.source
-        )
+        self.datasize = len(self.source)
 
     def __iter__(self):
-        self._rng()
-        yield from iter(self.source)
+        for i in torch.randperm(self.datasize):
+            yield self.source[i]
 
 
 @dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")
