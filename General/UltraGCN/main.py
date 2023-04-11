@@ -41,11 +41,8 @@ cfg.add_argument("--w4", type=float, default=1.)
 
 cfg.set_defaults(
     description="UltraGCN",
-    # root="../../data",
-    root="../../../data",
-    num_workers=0,
-    # dataset='Gowalla_10100811_Chron',
-    dataset='AmazonElectronics_m1',
+    root="../../data",
+    dataset='Gowalla_10100811_Chron',
     epochs=300,
     batch_size=512,
     optimizer='adam',
