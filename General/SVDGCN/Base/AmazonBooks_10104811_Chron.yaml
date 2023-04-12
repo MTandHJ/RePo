@@ -2,7 +2,7 @@ root: ../../data
 dataset: AmazonBooks_10104811_Chron
 lr: 10
 weight_decay: 1.e-4
-alpha: 5
+alpha: 20
 beta: 0.5
 req_vec: 900
 epochs: 50
