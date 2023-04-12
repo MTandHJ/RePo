@@ -4,6 +4,6 @@ lr: 15
 weight_decay: 1.e-4
 alpha: 5
 beta: 5
-req_vec: 500
+req_vec: 800
 batch_size: 2048
-epochs: 30
+epochs: 50
