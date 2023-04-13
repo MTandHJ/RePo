@@ -2,10 +2,11 @@
 
 from typing import Dict, Optional, Union
 
-import torch
+import torch, os
 import torch_geometric.transforms as T
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.nn import LGConv
+from freeplot.utils import import_pickle, export_pickle
 
 import freerec
 from freerec.data.postprocessing import RandomIDs, OrderedIDs
@@ -76,17 +77,33 @@ class CAGCN(RecSysArch):
             edge_index, torch.ones(edge_index.size(1)),
             size=(self.User.count, self.Item.count)
         )
-        if cfg.trend_type == 'jc':
-            edge_index, trend = jaccard_similarity(R)
-        elif cfg.trend_type == 'sc':
-            edge_index, trend = salton_cosine_similarity(R)
-        elif cfg.trend_type == 'lhn':
-            edge_index, trend = leicht_holme_nerman_similarity(R)
-        elif cfg.trend_type == 'cn':
-            edge_index, trend = common_neighbors_similarity(R)
-        edge_weight, _ = normalize_edge(edge_index, self.User.count, self.Item.count)
-        edge_norm = calc_node_wise_norm(edge_weight, edge_index[1], self.User.count, self.Item.count)
-        trend_norm = calc_node_wise_norm(trend, edge_index[1], self.User.count, self.Item.count)
+        file_ = os.path.join("trends", cfg.dataset, cfg.trend_type, "data.pickle")
+        try:
+            data = import_pickle(file_)
+            edge_index = data['edge_index']
+            edge_weight = data['edge_weight']
+            edge_norm = data['edge_norm']
+            trend_norm = data['trend_norm']
+        except ImportError:
+            if cfg.trend_type == 'jc':
+                edge_index, trend = jaccard_similarity(R)
+            elif cfg.trend_type == 'sc':
+                edge_index, trend = salton_cosine_similarity(R)
+            elif cfg.trend_type == 'lhn':
+                edge_index, trend = leicht_holme_nerman_similarity(R)
+            elif cfg.trend_type == 'cn':
+                edge_index, trend = common_neighbors_similarity(R)
+            edge_weight, _ = normalize_edge(edge_index, self.User.count, self.Item.count)
+            edge_norm = calc_node_wise_norm(edge_weight, edge_index[1], self.User.count, self.Item.count)
+            trend_norm = calc_node_wise_norm(trend, edge_index[1], self.User.count, self.Item.count)
+
+            data = {
+                'edge_index': edge_index,
+                'edge_weight': edge_weight,
+                'edge_norm': edge_norm,
+                'trend_norm': trend_norm
+            }
+            export_pickle(data, file_)
 
         if cfg.fusion:
             infoLogger("[CAGCN] >>> Use Trend and Edge Weight together ...")
