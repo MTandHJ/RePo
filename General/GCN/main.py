@@ -5,17 +5,20 @@ from typing import Dict, Optional, Union
 import torch
 import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
-from torch_geometric.nn import GCNConv
 import torch_geometric.nn.models as models
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 import freerec
+from freerec.data.postprocessing import RandomIDs, OrderedIDs
 from freerec.parser import Parser
 from freerec.launcher import Coach
 from freerec.models import RecSysArch
 from freerec.criterions import BPRLoss
-from freerec.data.fields import Tokenizer
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.fields import FieldModuleList
+from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
+
+
+freerec.decalre(version='0.3.1')
 
 
 cfg = Parser()
@@ -39,7 +42,7 @@ cfg.compile()
 class GCN(RecSysArch):
 
     def __init__(
-        self, tokenizer: Tokenizer, 
+        self, tokenizer: FieldModuleList, 
         graph: Data,
         num_layers: int = 3
     ) -> None:
@@ -84,8 +87,9 @@ class GCN(RecSysArch):
         return super().to(device, dtype, non_blocking)
 
     def forward(
-        self, users: Optional[Dict[str, torch.Tensor]] = None, 
-        items: Optional[Dict[str, torch.Tensor]] = None
+        self, users: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor
     ):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
@@ -93,47 +97,49 @@ class GCN(RecSysArch):
         features = self.model(features, self.graph.adj_t)
         userFeats, itemFeats = torch.split(features, (self.User.count, self.Item.count))
 
-        if self.training: # Batch
-            users, items = users[self.User.name], items[self.Item.name]
-            userFeats = userFeats[users] # B x 1 x D
-            itemFeats = itemFeats[items] # B x n x D
-            userEmbs = self.User.look_up(users) # B x 1 x D
-            itemEmbs = self.Item.look_up(items) # B x n x D
-            return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
-        else:
-            return userFeats, itemFeats
+        users, items = users, torch.cat(
+            [positives, negatives], dim=1
+        )
+        userFeats = userFeats[users] # B x 1 x D
+        itemFeats = itemFeats[items] # B x n x D
+        userEmbs = self.User.look_up(users) # B x 1 x D
+        itemEmbs = self.Item.look_up(items) # B x n x D
+        return torch.mul(userFeats, itemFeats).sum(-1)
+
+    def recommend(self):
+        userEmbs = self.User.embeddings.weight
+        itemEmbs = self.Item.embeddings.weight
+        features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
+        features = self.model(features, self.graph.adj_t)
+        userFeats, itemFeats = torch.split(features, (self.User.count, self.Item.count))
+        return userFeats, itemFeats
 
 
 class CoachForGCN(Coach):
 
-
-    def train_per_epoch(self):
-        for users, items in self.dataloader:
-            users = {name: val.to(self.device) for name, val in users.items()}
-            items = {name: val.to(self.device) for name, val in items.items()}
-
-            preds, users, items = self.model(users, items)
-            pos, neg = preds[:, 0], preds[:, 1]
+    def train_per_epoch(self, epoch: int):
+        for data in self.dataloader:
+            users, positives, negatives = [col.to(self.device) for col in data]
+            scores = self.model(users, positives, negatives)
+            pos, neg = scores[:, 0], scores[:, 1]
             loss = self.criterion(pos, neg)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
+            self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, prefix: str = 'valid'):
-        User = self.fields[USER, ID]
-        Item = self.fields[ITEM, ID]
-        userFeats, itemFeats = self.model()
-        for users, items in self.dataloader:
-            users = users[User.name].to(self.device)
-            targets = items[Item.name].to(self.device)
+    def evaluate(self, epoch: int, prefix: str = 'valid'):
+        userFeats, itemFeats = self.model.recommend()
+        for user, unseen, seen in self.dataloader:
+            users = user.to(self.device).data
+            seen = seen.to_csr().to(self.device).to_dense().bool()
+            targets = unseen.to_csr().to(self.device).to_dense()
             users = userFeats[users].flatten(1) # B x D
             items = itemFeats.flatten(1) # N x D
             preds = users @ items.T # B x N
-            preds[targets == -1] = -1e10
-            targets[targets == -1] = 0
+            preds[seen] = -1e10
 
             self.monitor(
                 preds, targets,
@@ -144,18 +150,40 @@ class CoachForGCN(Coach):
 
 def main():
 
-    basepipe = getattr(freerec.data.datasets, cfg.dataset)(cfg.root)
-    trainpipe = basepipe.shard_().uniform_sampling_(num_negatives=1).tensor_().split_(cfg.batch_size)
-    validpipe = basepipe.trisample_(batch_size=2048).shard_().tensor_()
-    dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
+    dataset = getattr(freerec.data.datasets.general, cfg.dataset)(cfg.root)
+    User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
-    tokenizer = Tokenizer(basepipe.fields.groupby(ID))
+    # trainpipe
+    trainpipe = RandomIDs(
+        field=User, datasize=dataset.train().datasize
+    ).sharding_filter().gen_train_uniform_sampling_(
+        dataset, num_negatives=1
+    ).batch(cfg.batch_size).column_().tensor_()
+
+    # validpipe
+    validpipe = OrderedIDs(
+        field=User
+    ).sharding_filter().gen_valid_yielding_(
+        dataset # return (user, unseen, seen)
+    ).batch(1024).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
+
+    # testpipe
+    testpipe = OrderedIDs(
+        field=User
+    ).sharding_filter().gen_test_yielding_(
+        dataset
+    ).batch(1024).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
+
+    tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
         cfg.embedding_dim, ID
     )
-    User, Item = tokenizer[USER], tokenizer[ITEM]
     model = GCN(
-        tokenizer, basepipe.train().to_graph(User, Item), num_layers=cfg.layers
+        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID)), num_layers=cfg.layers
     )
 
     if cfg.optimizer == 'sgd':
@@ -174,16 +202,22 @@ def main():
     criterion = BPRLoss()
 
     coach = CoachForGCN(
+        trainpipe=trainpipe,
+        validpipe=validpipe,
+        testpipe=testpipe,
+        fields=dataset.fields,
         model=model,
-        dataset=dataset,
         criterion=criterion,
         optimizer=optimizer,
         lr_scheduler=None,
         device=cfg.device
     )
-    coach.compile(cfg, monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'])
+    coach.compile(
+        cfg, 
+        monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'],
+        which4best='ndcg@20'
+    )
     coach.fit()
-
 
 
 if __name__ == "__main__":
