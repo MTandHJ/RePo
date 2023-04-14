@@ -33,7 +33,7 @@ cfg.set_defaults(
     description="SVD-GCN",
     root="../../data",
     dataset='Gowalla_10100811_Chron',
-    epochs=100,
+    epochs=30,
     batch_size=2048,
     optimizer='sgd',
     lr=15,
@@ -84,8 +84,8 @@ class SVDGCN(RecSysArch):
         vals = self.weight_func(vals[:cfg.req_vec])
         U = U[:, :cfg.req_vec] * vals
         V = V[:, :cfg.req_vec] * vals
-        self.register_buffer("U", U)
-        self.register_buffer("V", V)
+        self.register_buffer("user_vector", U)
+        self.register_buffer("item_vector", V)
 
     def preprocess(self, graph: HeteroData):
         R = sp.lil_array(to_scipy_sparse_matrix(
@@ -127,7 +127,7 @@ class SVDGCN(RecSysArch):
         return (-torch.log(out).sum() + regu_term) / samp_user.size(0), samp_user.size(0)
     
     def recommend(self):
-            return self.user_vector.mm(self.FS), self.item_vector.mm(self.FS)
+        return self.user_vector.mm(self.FS), self.item_vector.mm(self.FS)
 
 
 class CoachForSVDGCN(Coach):
@@ -194,6 +194,9 @@ def main():
 
     tokenizer = FieldModuleList(dataset.fields)
     model = SVDGCN(tokenizer)
+    model.load(
+        dataset.train().to_bigraph((USER, ID), (ITEM, ID))
+    )
 
     coach = CoachForSVDGCN(
         trainpipe=trainpipe,
