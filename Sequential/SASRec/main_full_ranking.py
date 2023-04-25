@@ -10,9 +10,9 @@ from freerec.launcher import Coach
 from freerec.models import RecSysArch
 from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.tags import USER, ITEM, ID, POSITIVE, UNSEEN, SEEN
 
-freerec.decalre(version="0.3.1")
+freerec.decalre(version="0.3.5")
 
 cfg = Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
@@ -159,7 +159,6 @@ class SASRec(RecSysArch):
         positives: torch.Tensor,
         negatives: torch.Tensor
     ):
-
         padding_mask = (seqs == 0).unsqueeze(-1)
         seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
         seqs *= self.Item.dimension ** 0.5
@@ -179,7 +178,6 @@ class SASRec(RecSysArch):
     def recommend(
         self,
         seqs: torch.Tensor,
-        items: torch.Tensor
     ):
         padding_mask = (seqs == 0).unsqueeze(-1)
         seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
@@ -191,7 +189,7 @@ class SASRec(RecSysArch):
             seqs = self.after_one_block(seqs, padding_mask, l)
         
         features = self.lastLN(seqs)[:, -1, :].unsqueeze(-1) # (B, D, 1)
-        others = self.Item.look_up(items) # (B, 101, D)
+        others = self.Item.embeddings.weight[1:] # (#Items, D)
 
         return others.matmul(features).squeeze() # (B, 101)
 
@@ -214,11 +212,13 @@ class CoachForSASRec(Coach):
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
+        for users, seqs, unseen, seen in self.dataloader:
+            users = users.data
+            seqs = seqs.to(self.device).data
+            seen = seen.to_csr().to(self.device).to_dense().bool()
+            scores = self.model.recommend(seqs)
+            scores[seen] = -1e10
+            targets = unseen.to_csr().to(self.device).to_dense()
 
             self.monitor(
                 scores, targets,
@@ -248,28 +248,35 @@ def main():
     # validpipe
     validpipe = OrderedIDs(
         field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
+    ).sharding_filter().seq_valid_yielding_(
+        dataset
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1, 2], offset=1
+        indices=[1], offset=1
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    ).batch(100).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
 
     # testpipe
     testpipe = OrderedIDs(
         field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
+    ).sharding_filter().seq_test_yielding_(
+        dataset
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1, 2], offset=1
+        indices=[1], offset=1
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    ).batch(100).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
+
+
+
 
     Item.embed(
         cfg.hidden_size, padding_idx = 0
