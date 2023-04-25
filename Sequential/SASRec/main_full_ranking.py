@@ -37,6 +37,9 @@ cfg.set_defaults(
 cfg.compile()
 
 
+NUM_PADS = 1
+
+
 class PointWiseFeedForward(nn.Module):
 
     def __init__(self, hidden_size: int, dropout_rate: int):
@@ -189,7 +192,7 @@ class SASRec(RecSysArch):
             seqs = self.after_one_block(seqs, padding_mask, l)
         
         features = self.lastLN(seqs)[:, -1, :].unsqueeze(-1) # (B, D, 1)
-        others = self.Item.embeddings.weight[1:] # (#Items, D)
+        others = self.Item.embeddings.weight[NUM_PADS:] # (#Items, D)
 
         return others.matmul(features).squeeze() # (B, 101)
 
@@ -240,7 +243,7 @@ def main():
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1, 2, 3], offset=1
+        indices=[1, 2, 3], offset=NUM_PADS
     ).lpad_(
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
@@ -253,7 +256,7 @@ def main():
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1], offset=1
+        indices=[1], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
     ).batch(100).column_().tensor_().field_(
@@ -268,7 +271,7 @@ def main():
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1], offset=1
+        indices=[1], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
     ).batch(100).column_().tensor_().field_(
