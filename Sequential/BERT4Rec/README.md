@@ -2,7 +2,7 @@
 
 # BERT4Rec
 
-    freerec==0.2.3
+    freerec==0.3.1
 
 ## Usage
 
@@ -10,7 +10,7 @@
 ### MovieLens1M_550_Chron
 
 
-    python main.py --config=MovieLens1M_550_Chron.yaml
+    python main.py --config=configs/MovieLens1M_550_Chron.yaml
 
 
 #### maxlen=100

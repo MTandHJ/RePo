@@ -15,7 +15,7 @@ from freerec.criterions import BaseCriterion
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID
 
-freerec.decalre(version="0.2.5")
+freerec.decalre(version="0.3.1")
 
 cfg = Parser()
 cfg.add_argument("--maxlen", type=int, default=100)
@@ -44,6 +44,8 @@ cfg.set_defaults(
 )
 cfg.compile()
 
+
+NUM_PADS = 2
 
 
 class BERT4Rec(RecSysArch):
@@ -83,7 +85,7 @@ class BERT4Rec(RecSysArch):
             num_layers=num_blocks
         )
 
-        self.fc = nn.Linear(hidden_size, self.Item.count + 2)
+        self.fc = nn.Linear(hidden_size, self.Item.count + NUM_PADS)
 
         self.initialize()
 
@@ -131,7 +133,7 @@ class CoachForBERT4Rec(Coach):
         labels = seqs[masks]
         return masked_seqs, labels, masks
 
-    def train_per_epoch(self):
+    def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs  = [col.to(self.device) for col in data]
             seqs, labels, masks = self.random_mask(seqs)
@@ -144,7 +146,7 @@ class CoachForBERT4Rec(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, prefix: str = 'valid'):
+    def evaluate(self, epoch: int, prefix: str = 'valid'):
         for data in self.dataloader:
             users, seqs, items = [col.to(self.device) for col in data]
             scores = self.model.recommend(seqs, items)
@@ -187,7 +189,7 @@ def main():
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1], offset=2 # 0: padding; 1: mask token
+        indices=[1], offset=NUM_PADS # 0: padding; 1: mask token
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
@@ -200,7 +202,7 @@ def main():
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen - 1,
     ).rshift_(
-        indices=[1, 2], offset=2
+        indices=[1, 2], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
     ).rpad_(
@@ -215,7 +217,7 @@ def main():
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen - 1,
     ).rshift_(
-        indices=[1, 2], offset=2
+        indices=[1, 2], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
     ).rpad_(
@@ -224,7 +226,7 @@ def main():
 
     Item.embed(
         cfg.hidden_size, 
-        num_embeddings=Item.count + 2,
+        num_embeddings=Item.count + NUM_PADS,
         padding_idx=0
     )
     tokenizer = FieldModuleList(dataset.fields)
