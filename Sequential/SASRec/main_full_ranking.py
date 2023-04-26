@@ -194,7 +194,7 @@ class SASRec(RecSysArch):
         features = self.lastLN(seqs)[:, -1, :].unsqueeze(-1) # (B, D, 1)
         others = self.Item.embeddings.weight[NUM_PADS:] # (#Items, D)
 
-        return others.matmul(features).squeeze() # (B, 101)
+        return others.matmul(features).flatten(1) # (B, #Items)
 
 
 class CoachForSASRec(Coach):
