@@ -74,7 +74,6 @@ class CoachForBPRMF(Coach):
             self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
-        print(self.device)
         userFeats, itemFeats = self.model.recommend()
         for user, unseen, seen in self.dataloader:
             users = user.to(self.device).data
