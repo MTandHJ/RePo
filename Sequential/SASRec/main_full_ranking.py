@@ -278,9 +278,6 @@ def main():
         User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
     )
 
-
-
-
     Item.embed(
         cfg.hidden_size, padding_idx = 0
     )
