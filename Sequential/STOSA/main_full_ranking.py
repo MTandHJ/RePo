@@ -199,7 +199,7 @@ class STOSA(RecSysArch):
 class CoachForSTOSA(Coach):
 
     def pvn_loss(self, posLogits: torch.Tensor, pvnLogits: torch.Tensor):
-        return (posLogits - pvnLogits).clamp(0.).mean()
+        return  (pvnLogits - posLogits).clamp(0.).mean()
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
