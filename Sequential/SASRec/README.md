@@ -3,7 +3,6 @@
 
 # SASRec
 
-    freerec==0.3.1
 
 ## Usage
 

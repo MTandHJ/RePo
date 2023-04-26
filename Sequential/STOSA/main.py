@@ -16,7 +16,7 @@ from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN, POSITIVE
 
 from modules import LayerNorm, DistSAEncoder, wasserstein_distance, kl_distance
 
-freerec.decalre(version="0.3.1")
+freerec.decalre(version="0.3.5")
 
 cfg = Parser()
 cfg.add_argument("--maxlen", type=int, default=100)
