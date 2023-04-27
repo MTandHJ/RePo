@@ -82,6 +82,7 @@ class CAGCN(RecSysArch):
         file_ = os.path.join(path, "data.pickle")
         try:
             data = import_pickle(file_)
+            trend = data['trend']
             edge_index = data['edge_index']
             edge_weight = data['edge_weight']
             edge_norm = data['edge_norm']
@@ -100,6 +101,7 @@ class CAGCN(RecSysArch):
             trend_norm = calc_node_wise_norm(trend, edge_index[1], self.User.count, self.Item.count)
 
             data = {
+                'trend': trend,
                 'edge_index': edge_index,
                 'edge_weight': edge_weight,
                 'edge_norm': edge_norm,
