@@ -16,7 +16,7 @@ from freerec.models import RecSysArch
 from freerec.criterions import BPRLoss
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-from freerec.utils import infoLogger
+from freerec.utils import infoLogger, mkdirs
 from utils import calc_node_wise_norm, normalize_edge, \
                     jaccard_similarity, \
                     salton_cosine_similarity, \
@@ -24,7 +24,7 @@ from utils import calc_node_wise_norm, normalize_edge, \
                     common_neighbors_similarity
 
 
-freerec.decalre(version='0.3.1')
+freerec.decalre(version='0.3.5')
 
 
 cfg = Parser()
@@ -77,7 +77,9 @@ class CAGCN(RecSysArch):
             edge_index, torch.ones(edge_index.size(1)),
             size=(self.User.count, self.Item.count)
         )
-        file_ = os.path.join("trends", cfg.dataset, cfg.trend_type, "data.pickle")
+        path = os.path.join("trends", cfg.dataset, cfg.trend_type)
+        mkdirs(path)
+        file_ = os.path.join(path, "data.pickle")
         try:
             data = import_pickle(file_)
             edge_index = data['edge_index']
