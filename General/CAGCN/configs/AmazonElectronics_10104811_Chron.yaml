@@ -1,4 +1,4 @@
-dataset: AmazonCDs_10104811_Chron
+dataset: AmazonElectronics_10104811_Chron
 root: ../../data
 embedding_dim: 64
 layers: 3

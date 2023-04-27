@@ -32,7 +32,7 @@ cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
 cfg.add_argument("--trend-type", type=str, choices=('jc', 'sc', 'lhn', 'cn'), default='jc')
 cfg.add_argument("--trend-coeff", type=float, default=2)
-cfg.add_argument("--fusion", type=str, choices=("TRUE", "FALSE"), default='FALSE')
+cfg.add_argument("--fusion", type=eval, choices=("True", "False"), default='True')
 cfg.set_defaults(
     description="CAGCN",
     root="../../data",
@@ -46,7 +46,9 @@ cfg.set_defaults(
 )
 cfg.compile()
 
-cfg.fusion = True if cfg.fusion == 'TRUE' else False
+
+assert cfg.fusion is True or cfg.fusion is False, "cfg.fusion should be `True' or `False' ..."
+
 
 class CAGCN(RecSysArch):
 

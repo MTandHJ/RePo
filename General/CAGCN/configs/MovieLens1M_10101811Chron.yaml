@@ -9,4 +9,4 @@ lr: 1.e-3
 weight_decay: 1.e-3
 trend_type: jc # sc
 trend_coeff: 1
-fusion: 'True'
+fusion: True
