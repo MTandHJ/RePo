@@ -1,0 +1,14 @@
+dataset: AmazonElectronics_10104811_Chron
+root: ../../data
+num_workers: 4
+epochs: 100
+weight_decay: 1.e-5
+lr: 5.e-4
+batch_size: 256
+num_negs: 1000
+embedding_dim: 64 # 50 in official code
+gamma: 0.3
+margin: 0.8
+weight_for_negative: 5
+net_dropout: 0.
+unseen_only: False # True in official code

@@ -1,0 +1,13 @@
+dataset: AmazonCDs_10104811_Chron
+root: ../../data
+num_workers: 4
+epochs: 100
+weight_decay: 1.e-8
+lr: 1.e-4
+batch_size: 1024
+num_negs: 1500
+gamma: .5
+margin: 0.7
+weight_for_negative: 100
+net_dropout: .2
+unseen_only: False

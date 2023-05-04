@@ -1,0 +1,13 @@
+dataset: Gowalla_10100811_Chron
+root: ../../data
+num_workers: 4
+epochs: 100
+weight_decay: 1.e-5
+lr: 1.e-4
+batch_size: 256
+num_negs: 2000
+gamma: 0.8
+margin: 0.9
+weight_for_negative: 250
+net_dropout: .1
+unseen_only: False

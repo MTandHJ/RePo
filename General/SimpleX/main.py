@@ -5,40 +5,49 @@ from typing import Dict, Optional, Tuple, Union, Iterable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchdata.datapipes as dp
 from torch_geometric.data import HeteroData
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import bipartite_subgraph
 
-
+import freerec
+from freerec.data.postprocessing import OrderedIDs, RandomShuffledSource
+from freerec.data.postprocessing.sampler import GenTrainUniformSampler
+from freerec.criterions import BaseCriterion
 from freerec.parser import Parser
 from freerec.launcher import Coach
 from freerec.models import RecSysArch
-from freerec.criterions import BaseCriterion
-from freerec.data.datasets import Gowalla_m1, Yelp18_m1, AmazonBooks_m1
-from freerec.data.fields import Tokenizer
-from freerec.data.tags import USER, ITEM, ID
-from freerec.data.utils import errorLogger
+from freerec.data.fields import FieldModuleList
+from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
+
+
+freerec.decalre(version='0.3.5')
 
 
 cfg = Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
-cfg.add_argument("--num-negs", type=int, default=1000)
-cfg.add_argument("--gamma", type=float, default=1.)
-cfg.add_argument("--margin", type=float, default=.9)
+cfg.add_argument("--num-negs", type=int, default=1000) # 100,500,1000
+cfg.add_argument("--gamma", type=float, default=1.) # 0., 0.5, 0.1
+cfg.add_argument("--margin", type=float, default=.9) # 0:1:0.1
 cfg.add_argument("--weight-for-negative", type=float, default=150)
 cfg.add_argument("--net-dropout", type=float, default=.1)
+cfg.add_argument("--unseen-only", type=eval, choices=('True', 'False'), default=False)
+cfg.add_argument("--maxlen", type=int, default=500)
 cfg.set_defaults(
     description="SimpleX",
     root="../../data",
     dataset="Yelp18_m1",
     epochs=100,
-    batch_size=512,
+    batch_size=1024,
     optimizer='adam',
-    lr=1e-4,
-    weight_decay=1e-8,
-    seed=2019
+    lr=1e-4, # 1e-3 5e-4 1e-4
+    weight_decay=1e-8, # 1e-9:1e-2
+    seed=1
 )
 cfg.compile()
+
+
+assert isinstance(cfg.unseen_only, bool), f"`unseen_only' should be `bool' but type `{type(cfg.unseen_only)}' received ..."
 
 
 class AvgConv(MessagePassing):
@@ -69,7 +78,7 @@ class AvgConv(MessagePassing):
 class SimpleX(RecSysArch):
 
     def __init__(
-        self, tokenizer: Tokenizer, graph: HeteroData, 
+        self, tokenizer: FieldModuleList, graph: HeteroData, 
         gamma: float = cfg.gamma, dropout_rate: float = cfg.net_dropout
     ) -> None:
         super().__init__()
@@ -96,6 +105,18 @@ class SimpleX(RecSysArch):
     @graph.setter
     def graph(self, graph: HeteroData):
         self.__graph = graph
+        # users, items = self.graph[self.graph.edge_types[0]].edge_index
+        # new_users = []
+        # new_items = []
+        # for u in range(self.User.count):
+        #     masks = users == u
+        #     new_users.append(users[masks][:cfg.maxlen])
+        #     new_items.append(items[masks][:cfg.maxlen])
+        #     users = users[~masks]
+        #     items = items[~masks]
+        # users = torch.cat(new_users)
+        # items = torch.cat(new_items)
+        # self.graph[self.graph.edge_types[0]].edge_index = torch.stack((users, items), dim=0)
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -111,36 +132,78 @@ class SimpleX(RecSysArch):
         items = self.Item.embeddings.weight
         edge_index, _ = bipartite_subgraph(
             (users.flatten(), torch.arange(self.Item.count, device=self.device)),
-            self.graph[self.graph.edge_types[0]].edge_index,
+            edge_index=self.graph[self.graph.edge_types[0]].edge_index,
+            size=(self.User.count, self.Item.count),
             relabel_nodes=False
         )
         userEmbds = self.User.look_up(users)
-        return self.dropout(userEmbds * self.gamma + self.aggregator(items, edge_index)[users] * (1 - self.gamma))
+        return userEmbds * self.gamma + self.aggregator(items, edge_index)[users] * (1 - self.gamma)
 
     def initialize(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                print(m)
                 nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.)
             elif isinstance(m, nn.Embedding):
-                print(m)
                 nn.init.normal_(m.weight, std=1e-4)
 
     def forward(
-        self, users: Dict[str, torch.Tensor],
-        items: Dict[str, torch.Tensor]
+        self, 
+        users: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor
     ):
-        users, items = users[self.User.name], items[self.Item.name]
+        users, items = users, torch.cat((positives, negatives), dim=-1)
         itemFeats = F.normalize(self.Item.look_up(items), dim=-1) # B x K x D
-        userFeats = F.normalize(self.aggregate(users), dim=-1) # B x 1 x D
+        userFeats = self.dropout(F.normalize(self.aggregate(users), dim=-1)) # B x 1 x D
         scores = (userFeats * itemFeats).sum(-1) # cosine score, B x K
         return scores
 
-    def recommend(self, users: Dict[str, torch.Tensor]):
-        items = {self.Item.name: torch.arange(self.Item.count, device=self.device).view(1, -1)}
-        return self(users, items)
+    def recommend(self, users: torch.Tensor):
+        itemFeats = F.normalize(self.Item.embeddings.weight) # N x D
+        userFeats = self.dropout(F.normalize(self.aggregate(users), dim=-1).squeeze(1)) # B x D
+        return userFeats.matmul(itemFeats.t())
+
+
+class CoachForSimpleX(Coach):
+
+    def sample_negs_from_all(self, users, low, high):
+        return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
+
+    def train_per_epoch(self, epoch: int):
+        Item = self.fields[ITEM, ID]
+        for data in self.dataloader:
+            users, positives, negatives = [col.to(self.device) for col in data]
+            if not self.cfg.unseen_only:
+                negatives = self.sample_negs_from_all(users, 0, Item.count)
+            scores = self.model(users, positives, negatives)
+            loss = self.criterion(scores)
+            loss += self.criterion.regularize(
+                self.model.tokenizer.parameters(),
+                rtype='l2'
+            ) * self.cfg.weight_decay
+
+            self.optimizer.zero_grad()
+            nn.utils.clip_grad_norm_(self.model.parameters(), 10)
+            loss.backward()
+            self.optimizer.step()
+            
+            self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
+
+    def evaluate(self, epoch: int, prefix: str = 'valid'):
+        for user, unseen, seen in self.dataloader:
+            users = user.to(self.device).data
+            seen = seen.to_csr().to(self.device).to_dense().bool()
+            targets = unseen.to_csr().to(self.device).to_dense()
+            scores = self.model.recommend(users)
+            scores[seen] = -1e10
+
+            self.monitor(
+                scores, targets,
+                n=len(users), mode="mean", prefix=prefix,
+                pool=['NDCG', 'RECALL']
+            )
 
 
 class CosineContrastiveLoss(BaseCriterion):
@@ -152,25 +215,7 @@ class CosineContrastiveLoss(BaseCriterion):
     ):
         super(CosineContrastiveLoss, self).__init__(reduction)
         self.margin = margin
-        self.negative_weight = negative_weight if negative_weight else 1.
-
-
-    def regularize(self, params: Union[torch.Tensor, Iterable[torch.Tensor]], rtype: str = 'l2'):
-        """Add regularization for given parameters.
-
-        Parameters:
-        ---
-
-        params: List of parameters for regularization.
-        rtype: Some kind of regularization including 'l1'|'l2'.
-        """
-        params = [params] if isinstance(params, torch.Tensor) else params
-        if rtype == 'l1':
-            return sum(param.abs().sum() for param in params)
-        elif rtype == 'l2':
-            return sum(param.pow(2).sum() for param in params) / 2
-        else:
-            errorLogger(f"{rtype} regularization is not supported ...", NotImplementedError)
+        self.negative_weight = negative_weight
 
     def forward(self, scores: torch.Tensor):
         logits_pos = scores[:, 0]
@@ -185,68 +230,61 @@ class CosineContrastiveLoss(BaseCriterion):
         else:
             return loss
 
+@dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")
+class GenTrainShuffleSampler(GenTrainUniformSampler):
 
-class CoachForSimpleX(Coach):
+    def __iter__(self):
+        for user, pos in self.source:
+            if self._check(user):
+                if cfg.unseen_only:
+                    yield [user, pos, self._sample_neg(user)]
+                else:
+                    yield [user, pos, -1]
 
-
-    def train_per_epoch(self):
-        for users, items in self.dataloader:
-            users = {name: val.to(self.device) for name, val in users.items()}
-            items = {name: val.to(self.device) for name, val in items.items()}
-
-            scores = self.model(users, items)
-            loss = self.criterion(scores)
-            loss += self.criterion.regularize(
-                self.model.tokenizer.parameters(),
-                rtype='l2'
-            ) * self.cfg.weight_decay
-
-            self.optimizer.zero_grad()
-            nn.utils.clip_grad_norm_(self.model.parameters(), 10)
-            loss.backward()
-            self.optimizer.step()
-            
-            self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
-
-
-    def evaluate(self, prefix: str = 'valid'):
-        User = self.fields[USER, ID]
-        Item = self.fields[ITEM, ID]
-        for users, items in self.dataloader:
-            users = {name: val.to(self.device) for name, val in users.items()}
-            targets = items[Item.name].to(self.device)
-            scores = self.model.recommend(users)
-            scores[targets == -1] = -1e10
-            targets[targets == -1] = 0
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'PRECISION', 'RECALL', 'HITRATE']
-            )
+def take_all(dataset):
+    data = []
+    for chunk in dataset.train():
+        data.extend(list(zip(chunk[USER, ID], chunk[ITEM, ID])))
+    return data
 
 
 def main():
 
-    if cfg.dataset == "Gowalla_m1":
-        basepipe = Gowalla_m1(cfg.root)
-    elif cfg.dataset == "Yelp18_m1":
-        basepipe = Yelp18_m1(cfg.root)
-    elif cfg.dataset == "AmazonBooks_m1":
-        basepipe = AmazonBooks_m1(cfg.root)
-    else:
-        raise ValueError(f"DataSet should be Gowalla_m1 or Yelp18_m1 or AmazonBooks_m1 ...")
-    trainpipe = basepipe.shard_().negatives_for_train_(num_negatives=cfg.num_negs).tensor_().split_(cfg.batch_size)
-    validpipe = basepipe.trisample_(batch_size=cfg.batch_size).shard_().tensor_()
-    dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
+    dataset = getattr(freerec.data.datasets.general, cfg.dataset)(cfg.root)
+    User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
-    tokenizer = Tokenizer(basepipe.fields)
+    # trainpipe
+    trainpipe = RandomShuffledSource(
+        take_all(dataset)
+    ).sharding_filter().gen_train_shuffle_uniform_sampling_(
+        dataset, num_negatives=cfg.num_negs
+    ).batch(cfg.batch_size).column_().tensor_()
+
+    # validpipe
+    validpipe = OrderedIDs(
+        field=User
+    ).sharding_filter().gen_valid_yielding_(
+        dataset # return (user, unseen, seen)
+    ).batch(1024).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
+
+    # testpipe
+    testpipe = OrderedIDs(
+        field=User
+    ).sharding_filter().gen_test_yielding_(
+        dataset
+    ).batch(1024).column_().tensor_().field_(
+        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    )
+
+    tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
         cfg.embedding_dim, ID
     )
     User, Item = tokenizer[USER], tokenizer[ITEM]
     model = SimpleX(
-        tokenizer, basepipe.train().to_bigraph(User, Item)
+        tokenizer, dataset.train().to_bigraph((USER, ID), (ITEM, ID))
     )
 
     if cfg.optimizer == 'sgd':
@@ -254,27 +292,31 @@ def main():
             model.parameters(), lr=cfg.lr, 
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
-            # weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
-            # weight_decay=cfg.weight_decay
         )
     criterion = CosineContrastiveLoss()
 
     coach = CoachForSimpleX(
+        trainpipe=trainpipe,
+        validpipe=validpipe,
+        testpipe=testpipe,
+        fields=dataset.fields,
         model=model,
-        dataset=dataset,
         criterion=criterion,
         optimizer=optimizer,
         lr_scheduler=None,
         device=cfg.device
     )
-    coach.compile(cfg, monitors=['recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'])
+    coach.compile(
+        cfg, 
+        monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'],
+        which4best='ndcg@20'
+    )
     coach.fit()
-
 
 
 if __name__ == "__main__":
