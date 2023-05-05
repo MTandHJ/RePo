@@ -1,0 +1,12 @@
+dataset: Gowalla_m1
+root: ../../data
+epochs: 100
+weight_decay: 1.e-8
+lr: 1.e-4
+batch_size: 256
+num_negs: 800
+margin: 0.9
+weight_for_negative: 150
+dropout_rate: 0.1
+embedding_dim: 64
+unseen_only: False

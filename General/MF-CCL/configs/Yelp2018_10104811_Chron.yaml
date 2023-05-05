@@ -1,0 +1,12 @@
+dataset: Yelp2018_10104811_Chron
+root: ../../data
+epochs: 100
+weight_decay: 1.e-9
+lr: 1.e-4
+batch_size: 512
+num_negs: 1000
+margin: 0.9
+weight_for_negative: 150
+dropout_rate: 0.1
+embedding_dim: 64
+unseen_only: False

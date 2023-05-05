@@ -1,0 +1,13 @@
+dataset: MovieLens1M_10101811_Chron
+root: ../../data
+num_workers: 4
+epochs: 100
+weight_decay: 1.e-8
+lr: 1.e-4
+batch_size: 1024
+num_negs: 1500
+embedding_dim: 64 # 128 in official code
+margin: 0.9
+weight_for_negative: 10
+dropout_rate: .1
+unseen_only: False # True in official code
