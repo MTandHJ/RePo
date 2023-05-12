@@ -6,7 +6,7 @@ batch_size: 1024
 optimizer: adam
 embedding_dim: 64
 num_neighbors: 10
-unseen_only: 'False'
+unseen_only: False
 num_negs: 1000
 neg_weight: 1000
 norm_weight: 1.e-4

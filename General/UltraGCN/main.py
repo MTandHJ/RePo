@@ -22,7 +22,7 @@ from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
 
 
-freerec.decalre(version="0.3.1")
+freerec.decalre(version="0.3.7")
 
 
 cfg = Parser()
@@ -30,7 +30,7 @@ cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-negs", type=int, default=1500)
 cfg.add_argument("--num-neighbors", type=int, default=10)
 cfg.add_argument("--neg-weight", type=float, default=300)
-cfg.add_argument("--unseen-only", type=eval, default='False')
+cfg.add_argument("--unseen-only", type=eval, default=False)
 cfg.add_argument("--norm-weight", type=float, default=1e-4, help="for l2 normalization")
 cfg.add_argument("--item-weight", type=float, default=5e-4, help="for item constraint")
 cfg.add_argument("--init-weight", type=float, default=1e-4, help="std for init")
@@ -50,6 +50,9 @@ cfg.set_defaults(
     seed=1,
 )
 cfg.compile()
+
+
+assert isinstance(cfg.unseen_only, bool)
 
 
 class UltraGCN(RecSysArch):
