@@ -21,11 +21,11 @@ freerec.decalre(version='0.3.5')
 cfg = Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=8)
 cfg.add_argument("--num-negs", type=int, default=4)
-cfg.add_argument("--hidden-sizes", type=str, default="16,32,16,8")
+cfg.add_argument("--hidden-sizes", type=str, default="64,32,16,8")
 cfg.set_defaults(
     description="NeuMF",
-    root="../data",
-    dataset='Gowalla_m1',
+    root="../../data",
+    dataset='Gowalla_10100811_Chron',
     epochs=200,
     batch_size=1024,
     optimizer='adam',
@@ -79,7 +79,7 @@ class NeuMF(RecSysArch):
             features4MLP = self.act(linear(features4MLP)) # (B, K, D')
 
         userEmbs4MF = self.user4mf(users)
-        itemEmbs4MF = self.user4mf(items)
+        itemEmbs4MF = self.item4mf(items)
         features4MF = userEmbs4MF.mul(itemEmbs4MF) # (B, K, D')
 
         features = torch.cat((features4MLP, features4MF), dim=-1) # (B, K, 2D')
@@ -102,13 +102,6 @@ class NeuMF(RecSysArch):
 
 
 class CoachForNeuMF(Coach):
-
-
-    def reg_loss(self, userEmbds, itemEmbds):
-        userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
-        loss = loss / userEmbds.size(0)
-        return loss / 2
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
@@ -156,7 +149,7 @@ def main():
         field=User
     ).sharding_filter().gen_valid_yielding_(
         dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
+    ).batch(128).column_().tensor_().field_(
         User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
     )
 
@@ -165,7 +158,7 @@ def main():
         field=User
     ).sharding_filter().gen_test_yielding_(
         dataset
-    ).batch(1024).column_().tensor_().field_(
+    ).batch(128).column_().tensor_().field_(
         User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
     )
 
@@ -177,11 +170,13 @@ def main():
             model.parameters(), lr=cfg.lr, 
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
+            weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
+            weight_decay=cfg.weight_decay
         )
     criterion = BCELoss4Logits()
 
