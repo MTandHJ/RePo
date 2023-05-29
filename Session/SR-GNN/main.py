@@ -44,11 +44,6 @@ NUM_PADS = 1
 
 
 class GNN(nn.Module):
-    r"""
-
-
-
-    """
 
     def __init__(self, hidden_size, num_layers: int = 1):
         super(GNN, self).__init__()
@@ -114,7 +109,6 @@ class SRGNN(RecSysArch):
         self.linear_two = nn.Linear(hidden_size, hidden_size, bias=True)
         self.linear_three = nn.Linear(hidden_size, 1, bias=False)
         self.linear_transform = nn.Linear(hidden_size * 2, hidden_size, bias=True)
-        self.loss_function = nn.CrossEntropyLoss()
 
         self.initialize()
 
