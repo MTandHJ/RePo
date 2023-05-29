@@ -15,7 +15,6 @@ from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
 freerec.decalre(version="0.4.1")
 
 cfg = Parser()
-cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--embedding-dim", type=int, default=100)
 cfg.add_argument("--hidden-size", type=int, default=100)
 
@@ -25,9 +24,10 @@ cfg.set_defaults(
     dataset='Diginetica_250811_Chron',
     epochs=30,
     batch_size=512,
-    optimizer='adam',
+    optimizer='adamw',
     lr=5e-3,
-    weight_decay=0.,
+    weight_decay=1.e-8,
+    eval_freq=1,
     seed=1,
 )
 cfg.compile()
@@ -93,7 +93,7 @@ class STAMP(RecSysArch):
         return h.matmul(items.t())
 
     def forward(self, seqs: torch.Tensor):
-        items = self.Item.embeddings.weight # (N + NUM_PADS, D)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
         return self._forward(seqs, items)
 
     def recommend(self, seqs: torch.Tensor):
@@ -126,7 +126,7 @@ class CoachForSTAMP(Coach):
             self.monitor(
                 scores, targets,
                 n=len(sesses), mode="mean", prefix=prefix,
-                pool=['PRECISION', 'MRR']
+                pool=['HITRATE', 'PRECISION', 'MRR']
             )
 
 
@@ -140,26 +140,22 @@ def main():
         dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_train_yielding_(
         None # yielding (sesses, seqs, targets)
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+        indices=[1], offset=NUM_PADS
+    ).batch(cfg.batch_size).column_().lpad_col_(
+        indices=[1], maxlen=None, padding_value=0
+    ).tensor_()
 
     # validpipe
     validpipe = OrderedSource(
         dataset.valid().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_valid_yielding_(
         None # yielding (sesses, seqs, targets, seen)
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(512).column_().tensor_().field_(
+    ).batch(512).column_().lpad_col_(
+        indices=[1], maxlen=None, padding_value=0
+    ).tensor_().field_(
         Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
     )
 
@@ -168,18 +164,16 @@ def main():
         dataset.test().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_test_yielding_(
         None # yielding (sesses, seqs, targets, seen)
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(512).column_().tensor_().field_(
+    ).batch(512).column_().lpad_col_(
+        indices=[1], maxlen=None, padding_value=0
+    ).tensor_().field_(
         Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
     )
 
     Item.embed(
-        cfg.embedding_dim, padding_idx = 0
+        cfg.embedding_dim, padding_idx=0
     )
     tokenizer = FieldModuleList(dataset.fields)
     model = STAMP(
@@ -199,6 +193,13 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
+    elif cfg.optimizer == 'adamw':
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=cfg.lr,
+            betas=(cfg.beta1, cfg.beta2),
+            weight_decay=cfg.weight_decay
+        )
+
     criterion = CrossEntropy4Logits()
 
     coach = CoachForSTAMP(
@@ -213,8 +214,8 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
-        which4best='precision@20'
+        cfg, monitors=['loss', 'hitrate@10', 'hitrate@20', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
+        which4best='mrr@20'
     )
     coach.fit()
 
