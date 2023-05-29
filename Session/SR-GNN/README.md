@@ -2,7 +2,7 @@
 
 # STAMP
 
-[official-code](https://github.com/CRIPAC-DIG/SR-GNN)
+[[official-code](https://github.com/CRIPAC-DIG/SR-GNN)]
 
 
 ## Usage
