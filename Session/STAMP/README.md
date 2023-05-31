@@ -2,7 +2,7 @@
 
 # STAMP
 
-[[official-code](https://github.com/uestcnlp/STAMP.git)]
+[[official-code](https://github.com/uestcnlp/STAMP)]
 
 
 ## Usage
