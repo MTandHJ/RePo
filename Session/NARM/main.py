@@ -12,7 +12,7 @@ from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
 
-freerec.decalre(version="0.4.1")
+freerec.decalre(version="0.4.3")
 
 cfg = Parser()
 cfg.add_argument("--embedding-dim", type=int, default=50)
@@ -155,7 +155,7 @@ def main():
     validpipe = OrderedSource(
         dataset.valid().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_valid_yielding_(
-        None # yielding (sesses, seqs, targets, seen)
+        dataset # yielding (sesses, seqs, targets, seen)
     ).rshift_(
         indices=[1], offset=NUM_PADS
     ).batch(512).column_().rpad_col_(
@@ -168,7 +168,7 @@ def main():
     testpipe = OrderedSource(
         dataset.test().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_test_yielding_(
-        None # yielding (sesses, seqs, targets, seen)
+        dataset # yielding (sesses, seqs, targets, seen)
     ).rshift_(
         indices=[1], offset=NUM_PADS
     ).batch(512).column_().rpad_col_(
