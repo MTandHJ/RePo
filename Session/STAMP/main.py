@@ -24,9 +24,9 @@ cfg.set_defaults(
     dataset='Diginetica_250811_Chron',
     epochs=30,
     batch_size=512,
-    optimizer='adamw',
+    optimizer='adam',
     lr=5e-3,
-    weight_decay=1.e-8,
+    weight_decay=0.,
     eval_freq=1,
     seed=1,
 )
