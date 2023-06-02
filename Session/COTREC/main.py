@@ -36,7 +36,7 @@ cfg.add_argument('--scale4sessEmbsI', type=float, default=10., help='scale facto
 
 cfg.set_defaults(
     description="COTREC",
-    root="../../../data",
+    root="../../data",
     dataset='Diginetica_250811_Chron',
     epochs=30,
     batch_size=100,
