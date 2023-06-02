@@ -76,16 +76,17 @@ class ItemConv(nn.Module):
 
     @graph.setter
     def graph(self, graph: Data):
+        # XXX: https://github.com/xiaxin1998/COTREC/issues/13
         self.__graph = graph
         T.ToSparseTensor(attr='edge_weight')(self.__graph)
-        adj_t = self.__graph.adj_t
+        adj_t = self.__graph.adj_t.t()
         if not adj_t.has_value():
             adj_t = adj_t.fill_value(1., dtype=torch.float32)
         adj_t = fill_diag(adj_t, 1.)
-        deg = sparsesum(adj_t, dim=1) # column sum
+        deg = sparsesum(adj_t, dim=0) # column sum
         deg_inv = deg.pow(-1.)
         deg_inv.masked_fill_(deg_inv == float('inf'), 0.)
-        self.__graph.adj_t = mul(adj_t, deg_inv.view(-1, 1)) # TODO: ???
+        self.__graph.adj_t = mul(adj_t, deg_inv.view(1, -1))
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
