@@ -203,7 +203,7 @@ class CoachForSRGNN(Coach):
             self.monitor(
                 scores, targets,
                 n=len(sesses), mode="mean", prefix=prefix,
-                pool=['PRECISION', 'MRR']
+                pool=['HITRATE', 'PRECISION', 'MRR']
             )
 
 
