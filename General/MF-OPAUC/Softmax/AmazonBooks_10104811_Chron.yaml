@@ -1,13 +1,13 @@
-dataset: Gowalla_10100811_Chron
+dataset: AmazonBooks_10104811_Chorn
 root: ../../data
 embedding_dim: 64
 epochs: 200
-batch_size: 4096
+batch_size: 8192
 optimizer: adam
 lr: 1.e-3
-weight_decay: 1.e-2
+weight_decay: 1.e-3
 loss_type: Softmax
-num_negs: 50
+num_negs: 1000
 weight: 1.
 stepsize: 5
 gamma: 0.95

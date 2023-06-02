@@ -1,4 +1,4 @@
-dataset: Gowalla_10100811_Chron
+dataset: Yelp2018_10104811_Chron
 root: ../../data
 embedding_dim: 64
 epochs: 200
@@ -7,7 +7,7 @@ optimizer: adam
 lr: 1.e-3
 weight_decay: 1.e-2
 loss_type: Softmax
-num_negs: 50
+num_negs: 10
 weight: 1.
 stepsize: 5
 gamma: 0.95
