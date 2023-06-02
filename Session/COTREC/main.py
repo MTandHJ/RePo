@@ -44,7 +44,6 @@ cfg.set_defaults(
     lr=1e-3,
     weight_decay=1.e-5,
     eval_freq=1,
-    num_workers=0,
     seed=1,
 )
 cfg.compile()
@@ -76,7 +75,7 @@ class ItemConv(nn.Module):
         return self.__graph
 
     @graph.setter
-    def graph(self, graph: Data): # TODO:
+    def graph(self, graph: Data):
         self.__graph = graph
         T.ToSparseTensor(attr='edge_weight')(self.__graph)
         adj_t = self.__graph.adj_t
@@ -86,7 +85,7 @@ class ItemConv(nn.Module):
         deg = sparsesum(adj_t, dim=1) # column sum
         deg_inv = deg.pow(-1.)
         deg_inv.masked_fill_(deg_inv == float('inf'), 0.)
-        self.__graph.adj_t = mul(adj_t, deg_inv.view(-1, 1))
+        self.__graph.adj_t = mul(adj_t, deg_inv.view(-1, 1)) # TODO: ???
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -130,7 +129,7 @@ class SessConv(nn.Module):
         avgFeats = features.div(self.num_layers + 1)
         for i in range(self.num_layers):
             features = self.weights[i](features)
-            features = adj.mul(features)
+            features = adj.matmul(features)
             avgFeats += F.normalize(
                 features
             ).div(self.num_layers + 1)
@@ -180,6 +179,14 @@ class COTREC(RecSysArch):
         self.loss_function = nn.CrossEntropyLoss()
 
         self.initialize()
+
+    def to(
+        self, device: Optional[Union[int, torch.device]] = None, 
+        dtype: Optional[Union[torch.dtype, str]] = None, 
+        non_blocking: bool = False
+    ):
+        self.ItemGraph.to(device)
+        return super().to(device, dtype, non_blocking)
 
     def initialize(self):
         """Initializes the module parameters."""
@@ -287,7 +294,7 @@ class COTREC(RecSysArch):
         )
         sessEmbsI = self.calc_sess_emb(
             torch.cat([
-                torch.zeros(NUM_PADS, itemEmbsI.size(-1)),
+                torch.zeros(NUM_PADS, itemEmbsI.size(-1), device=self.device),
                 itemEmbsI
             ], dim=0),
             seqs, seqLens, masks
@@ -349,7 +356,7 @@ class COTREC(RecSysArch):
         itemEmbsI = self.ItemGraph(items)
         sessEmbsI = self.calc_sess_emb(
             torch.cat([
-                torch.zeros(NUM_PADS, itemEmbsI.size(-1)),
+                torch.zeros(NUM_PADS, itemEmbsI.size(-1), device=self.device),
                 itemEmbsI
             ], dim=0),
             seqs, seqLens, masks
