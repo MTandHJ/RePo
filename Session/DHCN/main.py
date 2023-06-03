@@ -106,7 +106,7 @@ class DHCN(RecSysArch):
 
         self.embedding_dim = embedding_dim
 
-        self.w_1 = nn.Parameter(torch.Tensor(2 * embedding_dim, embedding_dim))
+        self.w_1 = nn.Linear(2 * embedding_dim, embedding_dim)
         self.w_2 = nn.Parameter(torch.Tensor(embedding_dim, 1))
         self.glu1 = nn.Linear(embedding_dim, embedding_dim)
         self.glu2 = nn.Linear(embedding_dim, embedding_dim, bias=False)
@@ -144,7 +144,7 @@ class DHCN(RecSysArch):
         positions = self.pos_embedding.weight[:seqs.size(-1)].unsqueeze(0).expand_as(seqh) # (B, S, D)
 
         hs = seqh.sum(1).div(seqLens).unsqueeze(1) # (B, 1, D)
-        nh = torch.matmul(torch.cat([positions, seqh], -1), self.w_1).tanh()
+        nh = self.w_1(torch.cat([positions, seqh], -1)).tanh()
         nh = torch.sigmoid(self.glu1(nh) + self.glu2(hs))
         alpha = torch.matmul(nh, self.w_2) # (B, S, 1)
         alpha = alpha * masks.unsqueeze(-1)
@@ -171,10 +171,10 @@ class DHCN(RecSysArch):
         return shuffled
 
     def SSL(self, sessEmbsH: torch.Tensor, sessEmbsL: torch.Tensor):
-        posScores = sessEmbsL.matmul(sessEmbsH.t())
-        negScores = sessEmbsL.matmul(
-            self._shuffle(sessEmbsH).t()
-        )
+        posScores = sessEmbsL.mul(sessEmbsH).sum(-1)
+        negScores = sessEmbsL.mul(
+            self._shuffle(sessEmbsH)
+        ).sum(-1)
         return torch.sum(
             posScores.sigmoid().add(1e-8).log().neg() + 
             (1 - negScores.sigmoid()).add(1e-8).log().neg()
@@ -281,7 +281,9 @@ def main():
     ).tensor_()
 
     # validpipe
-    validpipe = OrderedSource(
+    # Shuffling for the following reason:
+    # https://github.com/xiaxin1998/DHCN/issues/2
+    validpipe = RandomShuffledSource(
         dataset.valid().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_valid_yielding_(
         dataset # yielding (sesses, seqs, targets, seen)
@@ -294,7 +296,7 @@ def main():
     )
 
     # testpipe
-    testpipe = OrderedSource(
+    testpipe = RandomShuffledSource(
         dataset.test().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_test_yielding_(
         dataset # yielding (sesses, seqs, targets, seen)

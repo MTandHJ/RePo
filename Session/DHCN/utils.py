@@ -14,10 +14,10 @@ from freerec.data.tags import SESSION, ITEM, ID
 
 def get_session_item_graph(dataset: RecDataSet):
     Item = dataset.fields[ITEM, ID]
-    seqs = dataset.to_seqs(keepid=False)
+    seqs = dataset.to_roll_seqs(keepid=False)
     src = []
     trg = []
-    for s, seq in enumerate(seqs):
+    for s, seq in seqs:
         seq = np.unique(seq).tolist()
         src.extend([s] * len(seq))
         trg.extend(seq)
