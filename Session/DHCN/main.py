@@ -21,7 +21,7 @@ freerec.decalre(version="0.4.3")
 
 cfg = Parser()
 cfg.add_argument("--embedding-dim", type=int, default=100)
-cfg.add_argument('--num_layers', type=float, default=2, help='the number of layer used')
+cfg.add_argument('--num_layers', type=float, default=3, help='the number of layer used')
 cfg.add_argument('--beta', type=float, default=0.005, help='ssl task maginitude')
 
 cfg.set_defaults(
@@ -31,8 +31,8 @@ cfg.set_defaults(
     epochs=30,
     batch_size=100,
     optimizer='adam',
-    lr=1e-3,
-    weight_decay=1.e-5,
+    lr=1e-4,
+    weight_decay=1.e-8,
     eval_freq=1,
     seed=1,
 )
@@ -70,7 +70,7 @@ class HyperConv(nn.Module):
 
 class LinConv(nn.Module):
 
-    def __init__(self, num_layers: int = 2) -> None:
+    def __init__(self, num_layers: int = 3) -> None:
         super().__init__()
 
         self.num_layers = num_layers
