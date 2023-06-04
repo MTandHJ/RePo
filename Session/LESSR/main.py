@@ -32,7 +32,7 @@ cfg.set_defaults(
     dataset='Diginetica_250811_Chron',
     epochs=30,
     batch_size=512,
-    optimizer='adam',
+    optimizer='adamw',
     lr=1e-3,
     weight_decay=1.e-4,
     eval_freq=1,
@@ -286,6 +286,8 @@ class LESSR(RecSysArch):
 
             nums = len(items)
             x = torch.empty((nums, 0))
+            
+            # EOP
             graph_eop = Data(
                 x=x,
                 edge_index=torch.LongTensor(
@@ -294,18 +296,19 @@ class LESSR(RecSysArch):
             )
             graph_eop.nodes = torch.from_numpy(items)
 
+            # Shortcut
             graph_cut = Data(
                 x=x,
                 edge_index= coalesce(graph_eop.edge_index)
             )
 
+            # Session
             graph_sess = Data(
                 x=x,
                 edge_index=torch.LongTensor([
-                    # torch.from_numpy(items),
                     items,
                     [i] * nums,
-                    [last] * nums,
+                    [last] * nums, # for last items
                 ])
             )
 
@@ -382,6 +385,21 @@ class CoachForLESSR(Coach):
             )
 
 
+# ignore weight decay for parameters in bias, batch norm and activation
+def fix_weight_decay(model):
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if any(map(lambda x: x in name, ['bias', 'batch_norm', 'activation'])):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    params = [{'params': decay}, {'params': no_decay, 'weight_decay': 0}]
+    return params
+
+
 def main():
 
     dataset = getattr(freerec.data.datasets.session, cfg.dataset)(root=cfg.root)
@@ -432,22 +450,27 @@ def main():
         tokenizer
     )
 
+    if cfg.weight_decay > 0:
+        params = fix_weight_decay(model)
+    else:
+        params = model.parameters()
+
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
-            model.parameters(), lr=cfg.lr, 
+            params, lr=cfg.lr, 
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
             weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
-            model.parameters(), lr=cfg.lr,
+            params, lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(
-            model.parameters(), lr=cfg.lr,
+            params, lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
