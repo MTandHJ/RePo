@@ -6,7 +6,6 @@
 
 ## Usage
 
-`version: 0.3.1`
 
 ### Gowalla_m1
 

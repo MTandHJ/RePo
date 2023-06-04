@@ -18,7 +18,7 @@ from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
 
 
-freerec.decalre(version='0.3.1')
+freerec.declare(version='0.4.3')
 
 
 cfg = Parser()

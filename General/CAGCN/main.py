@@ -24,7 +24,7 @@ from utils import calc_node_wise_norm, normalize_edge, \
                     common_neighbors_similarity
 
 
-freerec.decalre(version='0.3.5')
+freerec.declare(version="0.4.3")
 
 
 cfg = Parser()

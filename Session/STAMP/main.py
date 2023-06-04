@@ -12,7 +12,7 @@ from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
 
-freerec.decalre(version="0.4.3")
+freerec.declare(version='0.4.3')
 
 cfg = Parser()
 cfg.add_argument("--embedding-dim", type=int, default=100)

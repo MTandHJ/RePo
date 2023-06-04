@@ -20,7 +20,7 @@ from freerec.utils import mkdirs, timemeter
 from freeplot.utils import export_pickle, import_pickle
 
 
-freerec.decalre(version='0.3.1')
+freerec.declare(version='0.4.3')
 
 
 cfg = Parser()
@@ -70,7 +70,7 @@ class SVDGCN(RecSysArch):
         file_ = os.path.join(path, "u_s_v.pickle")
         export_pickle(data, file_)
 
-    @timemeter("SVDGCN/load")
+    @timemeter
     def load(self, graph: HeteroData):
         path = os.path.join("filters", cfg.dataset, str(int(cfg.alpha)))
         file_ = os.path.join(path, "u_s_v.pickle")

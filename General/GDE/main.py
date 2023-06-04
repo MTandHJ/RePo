@@ -8,7 +8,7 @@ import scipy.sparse as sp
 from torch_geometric.data import Data, HeteroData 
 from torch_geometric.utils import to_scipy_sparse_matrix
 
-
+import freerec
 from freeplot.utils import export_pickle, import_pickle
 from freerec.parser import Parser
 from freerec.launcher import Coach
@@ -19,6 +19,7 @@ from freerec.data.fields import Tokenizer
 from freerec.data.tags import USER, ITEM, ID
 from freerec.utils import mkdirs, timemeter
 
+freerec.declare(version="0.4.3")
 
 cfg = Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -78,7 +79,7 @@ class GDE(RecSysArch):
         file_ = os.path.join(path, "eig_vals_vecs.pickle")
         export_pickle(data, file_)
 
-    @timemeter("GDE/load")
+    @timemeter
     def load(self):
         path = os.path.join("filters", cfg.dataset)
         file_ = os.path.join(path, "eig_vals_vecs.pickle")
@@ -118,7 +119,7 @@ class GDE(RecSysArch):
         self.register_buffer("A_u", (userVecs * self.weight_filter(userVals)).mm(userVecs.t()))
         self.register_buffer("A_i", (itemVecs * self.weight_filter(itemVals)).mm(itemVecs.t()))
 
-    @timemeter("GDE/lobpcg")
+    @timemeter
     def lobpcg(self, A, k: int, largest: bool = True, niter: int = 5):
         A = A.tocoo()
         rows = torch.from_numpy(A.row).long()
