@@ -37,7 +37,6 @@ cfg.set_defaults(
     weight_decay=1.e-4,
     eval_freq=1,
     seed=1,
-    device=1,
 )
 cfg.compile()
 
