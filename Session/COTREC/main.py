@@ -413,7 +413,7 @@ def main():
     ).tensor_()
 
     # validpipe
-    validpipe = OrderedSource(
+    validpipe = RandomShuffledSource(
         dataset.valid().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_valid_yielding_(
         dataset # yielding (sesses, seqs, targets, seen)
@@ -426,7 +426,7 @@ def main():
     )
 
     # testpipe
-    testpipe = OrderedSource(
+    testpipe = RandomShuffledSource(
         dataset.test().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_test_yielding_(
         dataset # yielding (sesses, seqs, targets, seen)
