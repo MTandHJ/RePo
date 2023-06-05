@@ -1,6 +1,6 @@
 
 
-# DHCN
+# LESSR
 
 [[official-code](https://github.com/twchen/lessr)]
 
