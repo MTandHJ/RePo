@@ -19,7 +19,7 @@ from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
 
-freerec.declare(version='0.4.3')
+freerec.declare(version="0.4.3")
 
 cfg = Parser()
 cfg.add_argument("--embedding-dim", type=int, default=32)
@@ -305,9 +305,8 @@ class LESSR(RecSysArch):
             graph_sess = Data(
                 x=x,
                 edge_index=torch.LongTensor([
-                    items,
-                    [i] * nums,
                     [last] * nums, # for last items
+                    [i] * nums,
                 ])
             )
 
@@ -318,8 +317,6 @@ class LESSR(RecSysArch):
         graph_eop = Batch.from_data_list(graph_eop)
         graph_cut = Batch.from_data_list(graph_cut)
         graph_sess = Batch.from_data_list(graph_sess)
-        graph_sess.lasts = graph_sess.edge_index[-1]
-        graph_sess.edge_index = graph_sess.edge_index[:2]
         return graph_eop.to(self.device), graph_cut.to(self.device), graph_sess.to(self.device)
 
     def _forward(self, seqs: torch.Tensor, items: torch.Tensor):
@@ -337,9 +334,9 @@ class LESSR(RecSysArch):
                 out = layer(features, graph_cut.edge_index)
             features = torch.cat([out, features], dim=1)
 
-        last_features = features[graph_sess.lasts]
+        last_features = features[graph_sess.edge_index[0]]
         sr_g = self.readout(features, last_features, graph_sess.edge_index, graph_sess.ptr)
-        sr_l = features[graph_sess.lasts.unique(sorted=False)]
+        sr_l = features[graph_sess.edge_index[0].unique(sorted=False)]
         sr = torch.cat([sr_l, sr_g], dim=1)
         if self.batch_norm is not None:
             sr = self.batch_norm(sr)
