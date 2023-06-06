@@ -62,9 +62,9 @@ class STAMP(RecSysArch):
         self.sigmoid = nn.Sigmoid()
         self.tanh = nn.Tanh()
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Linear):

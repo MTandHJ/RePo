@@ -110,9 +110,9 @@ class SRGNN(RecSysArch):
         self.linear_three = nn.Linear(hidden_size, 1, bias=False)
         self.linear_transform = nn.Linear(hidden_size * 2, hidden_size, bias=True)
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         import math
         stdv = 1.0 / math.sqrt(self.hidden_size)

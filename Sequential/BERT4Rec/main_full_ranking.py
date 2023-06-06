@@ -87,9 +87,9 @@ class BERT4Rec(RecSysArch):
 
         self.fc = nn.Linear(hidden_size, self.Item.count + NUM_PADS)
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Linear):

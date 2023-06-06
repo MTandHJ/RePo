@@ -87,9 +87,9 @@ class NGCF(RecSysArch):
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
         self.graph = graph
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)

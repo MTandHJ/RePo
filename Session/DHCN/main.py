@@ -113,7 +113,7 @@ class DHCN(RecSysArch):
 
         self.loss_function = nn.CrossEntropyLoss()
 
-        self.initialize()
+        self.reset_parameters()
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -123,7 +123,7 @@ class DHCN(RecSysArch):
         self.HyperGraph.to(device)
         return super().to(device, dtype, non_blocking)
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         import math
         stdv = 1.0 / math.sqrt(self.embedding_dim)

@@ -3,6 +3,7 @@
 from typing import Dict, Optional, Union
 
 import torch
+import torch.nn as nn
 
 import freerec
 from freerec.data.postprocessing import RandomIDs, OrderedIDs
@@ -40,7 +41,19 @@ class BPRMF(RecSysArch):
         self.tokenizer = tokenizer
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
 
-        self.initialize()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=1.e-4)
+            elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                nn.init.constant_(m.weight, 1.)
+                nn.init.constant_(m.bias, 0.)
 
     def forward(
         self, users: torch.Tensor,

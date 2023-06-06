@@ -68,9 +68,9 @@ class UltraGCN(RecSysArch):
         if cfg.item_weight > 0.:
             self.beta_for_item_item()
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Embedding):

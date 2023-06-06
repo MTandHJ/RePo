@@ -86,9 +86,9 @@ class STOSA(RecSysArch):
             torch.ones((1, 1, maxlen, maxlen), dtype=torch.bool).tril() # (1, 1, maxlen, maxlen)
         )
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """ Initialize the weights.
         """
         for module in self.modules():

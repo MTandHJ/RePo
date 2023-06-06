@@ -62,7 +62,19 @@ class NeuMF(RecSysArch):
             1
         )
 
-        self.initialize()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=1.e-4)
+            elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                nn.init.constant_(m.weight, 1.)
+                nn.init.constant_(m.bias, 0.)
 
     def _forward(
         self,

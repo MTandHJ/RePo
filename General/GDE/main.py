@@ -3,6 +3,7 @@
 from typing import Dict, Optional, Union
 
 import torch, os
+import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
 from torch_geometric.data import Data, HeteroData 
@@ -60,7 +61,19 @@ class GDE(RecSysArch):
         self.dropout = torch.nn.Dropout(cfg.dropout_rate)
         self.load()
 
-        self.initialize()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=1.e-4)
+            elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
+                nn.init.constant_(m.weight, 1.)
+                nn.init.constant_(m.bias, 0.)
 
     @property
     def graph(self) -> HeteroData:

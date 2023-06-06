@@ -87,10 +87,9 @@ class BERT4Rec(RecSysArch):
 
         self.fc = nn.Linear(hidden_size, self.Item.count + NUM_PADS)
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
-        """Initializes the module parameters."""
+    def reset_parameters(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)

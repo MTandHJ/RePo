@@ -63,9 +63,9 @@ class NARM(RecSysArch):
         self.ct_dropout = nn.Dropout(cfg.ct_dropout_rate)
         self.b = nn.Linear(2 * cfg.hidden_size, cfg.embedding_dim, bias=False)
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Linear):

@@ -111,9 +111,9 @@ class TAGNN(RecSysArch):
         self.linear_transform = nn.Linear(hidden_size * 2, hidden_size, bias=True)
         self.linear_t = nn.Linear(hidden_size, hidden_size, bias=False)  #target attention
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         import math
         stdv = 1.0 / math.sqrt(self.hidden_size)

@@ -74,11 +74,9 @@ class Caser(RecSysArch):
         self.W2 = nn.Embedding(self.Item.count + NUM_PADS, cfg.hidden_size * 2, padding_idx=0)
         self.b2 = nn.Embedding(self.Item.count + NUM_PADS, 1, padding_idx=0)
 
-        self.initialize()
+        self.reset_parameters()
 
-
-    def initialize(self):
-        """Initializes the module parameters."""
+    def reset_parameters(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
@@ -88,7 +86,6 @@ class Caser(RecSysArch):
                 nn.init.xavier_normal_(m.weight)
                 nn.init.normal_(m.weight, std=1. / cfg.hidden_size)
         self.b2.weight.data.zero_()
-
 
     def _forward(self, 
         seqs: torch.Tensor,

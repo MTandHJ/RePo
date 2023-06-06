@@ -51,9 +51,9 @@ class MFOPAUC(RecSysArch):
         self.tokenizer = tokenizer
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
 
-        self.initialize()
+        self.reset_parameters()
 
-    def initialize(self):
+    def reset_parameters(self):
         """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Linear):
