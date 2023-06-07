@@ -442,12 +442,22 @@ def main():
         cfg.embedding_dim, padding_idx=0
     )
     tokenizer = FieldModuleList(dataset.fields)
+
+    # maxlen
+    trainlen = max(list(
+        map(lambda seq: len(seq), dataset.train().to_seqs(keepid=False))
+    ))
+    validlen = max(list(
+        map(lambda seq: len(seq), dataset.valid().to_seqs(keepid=False))
+    ))
+    testlen = max(list(
+        map(lambda seq: len(seq), dataset.test().to_seqs(keepid=False))
+    ))
+
     model = COTREC(
         get_item_graph(dataset),
         tokenizer,
-        maxlen=max(list(
-            map(lambda seq: len(seq), dataset.to_seqs(keepid=False))
-        ))
+        maxlen=max(trainlen, validlen, testlen)
     )
 
     if cfg.optimizer == 'sgd':
