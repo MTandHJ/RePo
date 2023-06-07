@@ -23,7 +23,7 @@ cfg.add_argument("--dropout-rate", type=float, default=0.2)
 
 cfg.set_defaults(
     description="SASRec",
-    root="./data",
+    root="../../data",
     dataset='MovieLens1M',
     epochs=200,
     batch_size=128,
