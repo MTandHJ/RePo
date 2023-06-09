@@ -1,6 +1,5 @@
 
 
-
 # SASRec
 
 [[official-code](https://github.com/kang205/SASRec)]
@@ -8,12 +7,9 @@
 ## Usage
 
 
-
-Run with sampled-based ranking:
+Rune with full-ranking:
 
     python main.py --config=configs/xxx.yaml
 
-or with full-ranking
 
-    python main_full_ranking.py --config=configs/xxx.yaml
-
+The `main_seq.py` is a implementation in a sequential fashion.
