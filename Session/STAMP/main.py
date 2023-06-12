@@ -25,7 +25,7 @@ cfg.set_defaults(
     epochs=30,
     batch_size=512,
     optimizer='adam',
-    lr=5e-3,
+    lr=1e-3,
     weight_decay=0.,
     eval_freq=1,
     seed=1,
@@ -78,16 +78,16 @@ class STAMP(RecSysArch):
         masks = seqs.not_equal(0)
         lens = masks.sum(dim=-1, keepdim=True) # (B, 1)
         seqs = self.Item.look_up(seqs) # (B, S, D)
-        last = seqs[:, [-1], :] # (B, 1, D)
+        last = seqs[:, -1, :] # (B, D)
         ms = seqs.sum(dim=1).div(lens).unsqueeze(1) # (B, 1, D)
 
         alphas = self.w0(self.sigmoid(
-            self.w1(seqs) + self.w2(last) + self.w3(ms) + self.ba
+            self.w1(seqs) + self.w2(last.unsqueeze(1)) + self.w3(ms) + self.ba
         )) # (B, S, 1)
-        ma = alphas.mul(seqs).sum(1)
+        ma = alphas.mul(seqs).sum(1) + last
 
         hs = self.tanh(self.mlp_a(ma))
-        ht = self.tanh(self.mlp_b(last.squeeze()))
+        ht = self.tanh(self.mlp_b(last))
         h = hs.mul(ht) # (B, D)
 
         return h.matmul(items.t())
