@@ -2,7 +2,7 @@ root: ../../data
 dataset: AmazonBeauty_550_Chron
 maxlen: 100
 num_heads: 4
-num_layers: 1
+num_blocks: 1
 hidden_size: 64
 attn_dropout_rate: 0.
 hidden_dropout_rate: 0.3
