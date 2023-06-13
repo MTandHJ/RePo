@@ -277,10 +277,10 @@ def main():
         cfg, 
         monitors=[
             'loss', 
-            'hitrate@1', 'hitrate@5', 'hitrate@10', 'hitrate@20', 
-            'ndcg@5', 'ndcg@10', 'ndcg@20'
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10',
         ],
-        which4best='hitrate@10'
+        which4best='ndcg@10'
     )
     coach.fit()
 
