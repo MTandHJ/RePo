@@ -35,10 +35,10 @@ cfg.compile()
 
 class BPRMF(RecSysArch):
 
-    def __init__(self, tokenizer: FieldModuleList) -> None:
+    def __init__(self, fields: FieldModuleList) -> None:
         super().__init__()
 
-        self.tokenizer = tokenizer
+        self.fields = fields
         self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
 
         self.reset_parameters()
