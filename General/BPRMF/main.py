@@ -39,7 +39,7 @@ class BPRMF(RecSysArch):
         super().__init__()
 
         self.fields = fields
-        self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
+        self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
 
         self.reset_parameters()
 
