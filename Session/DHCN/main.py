@@ -289,7 +289,7 @@ def main():
         dataset # yielding (sesses, seqs, targets, seen)
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
+    ).batch(100).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_().field_(
         Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
@@ -302,7 +302,7 @@ def main():
         dataset # yielding (sesses, seqs, targets, seen)
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
+    ).batch(100).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_().field_(
         Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
