@@ -14,7 +14,7 @@ from freerec.data.tags import SESSION, ITEM, ID
 
 def get_session_item_graph(dataset: RecDataSet):
     Item = dataset.fields[ITEM, ID]
-    seqs = dataset.to_roll_seqs(keepid=False)
+    seqs = dataset.train().to_roll_seqs()
     src = []
     trg = []
     for s, seq in seqs:
