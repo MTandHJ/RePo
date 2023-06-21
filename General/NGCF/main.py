@@ -75,16 +75,16 @@ class NGCFConv(MessagePassing):
 class NGCF(RecSysArch):
 
     def __init__(
-        self, tokenizer: FieldModuleList, 
+        self, fields: FieldModuleList, 
         graph: Data,
         num_layers: int = 3
     ) -> None:
         super().__init__()
 
-        self.tokenizer = tokenizer
+        self.fields = fields
         self.num_layers = num_layers
         self.convs = nn.ModuleList([NGCFConv(cfg.embedding_dim, cfg.embedding_dim, cfg.mess_dropout) for _ in range(num_layers)])
-        self.User, self.Item = self.tokenizer[USER, ID], self.tokenizer[ITEM, ID]
+        self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
         self.graph = graph
 
         self.reset_parameters()
