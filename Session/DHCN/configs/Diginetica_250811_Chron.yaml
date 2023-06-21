@@ -3,7 +3,7 @@ root: ../../data
 epochs: 30
 batch_size: 100
 lr: 1.e-4
-weight_decay: 1.e-8
+weight_decay: 1.e-6
 embedding_dim: 100
 beta: 0.005
 num_layers: 3
