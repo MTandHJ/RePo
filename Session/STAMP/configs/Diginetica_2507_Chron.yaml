@@ -1,0 +1,8 @@
+dataset: Diginetica_2507_Chron
+root: ../../data
+epochs: 30
+batch_size: 512
+lr: 1.e-3
+weight_decay: 0.
+embedding_dim: 100
+hidden_size: 100
