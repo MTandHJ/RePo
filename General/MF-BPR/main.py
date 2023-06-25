@@ -21,7 +21,7 @@ freerec.declare(version="0.4.3")
 cfg = Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.set_defaults(
-    description="BPRMF",
+    description="MF-BPR",
     root="../../data",
     dataset='Gowalla_m1',
     epochs=500,
