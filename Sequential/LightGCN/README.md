@@ -1,9 +1,9 @@
 
 
+# LightGCN
 
-# SASRec
+[[official-code](https://github.com/gusye1234/LightGCN-PyTorch)]
 
-[[official-code](https://github.com/kang205/SASRec)]
 
 ## Usage
 
@@ -15,4 +15,6 @@ Run with sampled-based ranking:
 or with full-ranking
 
     python main_full_ranking.py --config=configs/xxx.yaml
+
+
 
