@@ -1,9 +1,9 @@
-dataset: MovieLens1M_550_Chron
+dataset: AmazonBeauty_550_Chron
 root: ../../data
 epochs: 30
 batch_size: 512
 lr: 1.e-3
-weight_decay: 1.e-6
-maxlen: 200
+weight_decay: 0.
+maxlen: 50
 embedding_dim: 64
 hidden_size: 64
