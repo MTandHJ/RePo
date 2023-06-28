@@ -7,6 +7,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from torch_geometric.data import Data, Batch
+from torch_geometric.nn import MessagePassing
+from torch_geometric.utils import to_dense_batch, softmax, coalesce
+import torch_geometric.transforms as T
+
 import freerec
 from freerec.data.postprocessing import RandomShuffledSource, OrderedIDs
 from freerec.parser import Parser
@@ -120,36 +125,50 @@ class SRGNN(RecSysArch):
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
 
-    def getA(self, seqs: torch.Tensor):
-        items, A, alias_indices = [], [], []
-        N = seqs.size(1)
-        for session in seqs.tolist():
-            node = np.unique(session)
-            items.append(node.tolist() + (N - len(node)) * [0])
-            sess_A = np.zeros((N, N), dtype=np.float32)
-            for i in np.arange(len(session) - 1):
-                if session[i + 1] == 0:
-                    break
-                u = np.where(node == session[i])[0][0]
-                v = np.where(node == session[i + 1])[0][0]
-                sess_A[u][v] = 1
-            u_sum_in = np.sum(sess_A, 0)
-            u_sum_in[np.where(u_sum_in == 0)] = 1
-            sess_A_in = np.divide(sess_A, u_sum_in)
-            u_sum_out = np.sum(sess_A, 1)
-            u_sum_out[np.where(u_sum_out == 0)] = 1
-            sess_A_out = np.divide(sess_A.transpose(), u_sum_out)
-            sess_A = np.concatenate([sess_A_in, sess_A_out]).transpose()
-            A.append(sess_A)
-            alias_indices.append([np.where(node == v)[0][0] for v in session])
-        alias_indices = torch.LongTensor(alias_indices).to(self.device) # (B, S)
-        A = torch.from_numpy(np.array(A)).to(self.device)
-        items = torch.LongTensor(items).to(self.device)
-        return alias_indices, A, items
+    def getA(self, seqs: torch.Tensor, masks: torch.Tensor):
+        def extract_from_seq(i: int, seq: np.ndarray, mask: np.ndarray):
+            N = len(seq)
+            seq_ = seq[mask]
+            items = np.unique(seq_)
+            mapper = {item:node for node, item in enumerate(items)}
+            mapper[0] = N - 1
+            seq_ = [mapper[item] for item in seq_]
+
+            x = torch.empty((N, 0))
+            
+            graph = Data(
+                x=x,
+                edge_index=torch.LongTensor([
+                    seq_[:-1],
+                    seq_[1:]
+                ])
+            )
+
+            T.ToSparseTensor()(graph)
+            A  = graph.adj_t.t()
+
+            A = A.to_dense()
+            nodes = np.zeros_like(seq)
+            nodes[:len(items)] = items
+            alias_indices = np.array([mapper[item] for item in seq])
+            return A, nodes, alias_indices
+        A, nodes, alias_indices = zip(*map(extract_from_seq, range(len(seqs)), seqs.cpu().numpy(), masks.cpu().numpy()))
+
+        A = torch.stack(A, dim=0).to(self.device) # (B, S, S)
+        nodes = torch.from_numpy(np.array(nodes)).to(self.device)
+        alias_indices = torch.from_numpy(np.array(alias_indices)).to(self.device)
+
+        row = A.sum(dim=1, keepdim=True).clamp_min(1)
+        col = A.sum(dim=2, keepdim=True).clamp_min(1)
+
+        A_in = A / row
+        A_out = A / col
+
+        return torch.cat([A_in, A_out], dim=-1), nodes, alias_indices
 
     def _forward(self, seqs: torch.Tensor, items: torch.Tensor):
         masks = seqs.not_equal(0)
-        alias_indices, A, unique_seqs = self.getA(seqs)
+        A, unique_seqs, alias_indices  = self.getA(seqs, masks)
         unique_seqs = self.Item.look_up(unique_seqs) # (B, S', D)
         hidden: torch.Tensor = self.gnn(A, unique_seqs) # (B, S', D)
         hidden = hidden.gather(
