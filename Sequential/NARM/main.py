@@ -10,7 +10,7 @@ from freerec.launcher import Coach
 from freerec.models import RecSysArch
 from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, POSITIVE, UNSEEN, SEEN
+from freerec.data.tags import USER, ITEM, ID
 
 freerec.declare(version='0.4.3')
 
@@ -76,7 +76,7 @@ class NARM(RecSysArch):
             elif isinstance(m, nn.Embedding):
                 nn.init.xavier_normal_(m.weight)
 
-    def _forward(self, seqs: torch.Tensor, items: torch.Tensor):
+    def _forward(self, seqs: torch.Tensor):
         masks = seqs.not_equal(0).unsqueeze(-1) # (B, S, 1)
         seqs = self.Item.look_up(seqs) # (B, S, D)
         seqs = self.emb_dropout(seqs)
@@ -95,16 +95,17 @@ class NARM(RecSysArch):
         c_t = torch.cat([c_local, c_global.squeeze(1)], 1) # (B, 2H)
         c_t = self.ct_dropout(c_t)
         features = self.b(c_t) # (B, D)
-
-        return features.matmul(items.t())
+        return features
 
     def forward(self, seqs: torch.Tensor):
         items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
-        return self._forward(seqs, items)
+        features = self._forward(seqs)
+        return features.matmul(items.t())
 
-    def recommend(self, seqs: torch.Tensor):
-        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
-        return self._forward(seqs, items)
+    def recommend(self, seqs: torch.Tensor, items: torch.Tensor):
+        items = self.Item.look_up(items) # (B, 101, D)
+        features =  self._forward(seqs).unsqueeze(1) # (B, 1, D)
+        return features.mul(items).sum(-1)
 
 
 class CoachForNARM(Coach):
@@ -122,13 +123,11 @@ class CoachForNARM(Coach):
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for users, seqs, unseen, seen in self.dataloader:
-            users = users.data
-            seqs = seqs.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            scores = self.model.recommend(seqs)
-            scores[seen] = -1e10
-            targets = unseen.to_csr().to(self.device).to_dense()
+        for data in self.dataloader:
+            users, seqs, items = [col.to(self.device) for col in data]
+            scores = self.model.recommend(seqs, items)
+            targets = torch.zeros_like(scores)
+            targets[:, 0] = 1
 
             self.monitor(
                 scores, targets,
@@ -172,32 +171,28 @@ def main():
     # validpipe
     validpipe = OrderedIDs(
         field=User
-    ).sharding_filter().seq_valid_yielding_(
-        dataset
+    ).sharding_filter().seq_valid_sampling_(
+        dataset # yielding (user, items, (target + (100) negatives))
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1], offset=NUM_PADS
+        indices=[1, 2], offset=NUM_PADS
     ).rpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(100).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
-    )
+    ).batch(cfg.batch_size).column_().tensor_()
 
     # testpipe
     testpipe = OrderedIDs(
         field=User
-    ).sharding_filter().seq_test_yielding_(
-        dataset
+    ).sharding_filter().seq_test_sampling_(
+        dataset # yielding (user, items, (target + (100) negatives))
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1], offset=NUM_PADS
+        indices=[1, 2], offset=NUM_PADS
     ).rpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(100).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
-    )
+    ).batch(cfg.batch_size).column_().tensor_()
 
     Item.embed(
         cfg.embedding_dim, padding_idx=0
