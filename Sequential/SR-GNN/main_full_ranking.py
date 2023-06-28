@@ -7,9 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from torch_geometric.data import Data, Batch
-from torch_geometric.nn import MessagePassing
-from torch_geometric.utils import to_dense_batch, softmax, coalesce
+from torch_geometric.data import Data
 import torch_geometric.transforms as T
 
 import freerec
