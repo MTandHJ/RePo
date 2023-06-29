@@ -6,21 +6,21 @@ import torch.nn.functional as F
 import math
 
 
-init = nn.initorch.xavier_uniform_
-uniform_init = nn.initorch.uniform
+init = nn.init.xavier_uniform_
+uniform_init = nn.init.uniform
 
 def sparse_dropout(x, keep_prob):
     msk = (torch.rand(x._values().size()) + keep_prob).floor().type(torch.bool)
     idx = x._indices()[:, msk]
     val = x._values()[msk]
-    return torch.sparse.FloatTensor(idx, val, x.shape).cuda()
+    return torch.sparse.FloatTensor(idx, val, x.shape, device=x.device)
 
 class Encoder(nn.Module):
 
     def __init__(self, cfg):
         super(Encoder, self).__init__()
 
-        self.item_emb = nn.Parameter(init(torch.empty(cfg.item, cfg.hidden_size))) # cfg.item = num_real_item + 1
+        self.item_emb = nn.Parameter(init(torch.empty(cfg.num_items, cfg.hidden_size))) # cfg.item = num_real_item + 1
         self.gcn_layers = nn.Sequential(*[GCNLayer() for i in range(cfg.num_gcn_layers)])
 
     def get_ego_embeds(self):
@@ -118,7 +118,7 @@ class SASRec(nn.Module):
         super(SASRec, self).__init__()
 
         self.pos_emb = nn.Parameter(init(torch.empty(cfg.maxlen, cfg.hidden_size)))
-        self.layers = nn.Sequential(*[TransformerLayer() for i in range(cfg.num_trm_layers)])
+        self.layers = nn.Sequential(*[TransformerLayer(cfg) for i in range(cfg.num_trm_layers)])
         self.LayerNorm = nn.LayerNorm(cfg.hidden_size)
         self.dropout = nn.Dropout(cfg.hidden_dropout_prob)
         self.apply(self.init_weights)
@@ -140,10 +140,9 @@ class SASRec(nn.Module):
         max_len = attention_mask.size(-1)
         attn_shape = (1, max_len, max_len)
 
-        subsequent_mask = torch.triu(torch.ones(attn_shape), diagonal=1) # torch.uint8
+        subsequent_mask = torch.triu(torch.ones(attn_shape, device=item_emb.device), diagonal=1) # torch.uint8
         subsequent_mask = (subsequent_mask == 0).unsqueeze(1)
         subsequent_mask = subsequent_mask.long()
-        subsequent_mask = subsequent_mask.cuda()
 
         extended_attention_mask = extended_attention_mask * subsequent_mask
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype) # fp16 compatibility
@@ -164,11 +163,11 @@ class SASRec(nn.Module):
 
 class TransformerLayer(nn.Module):
 
-    def __init__(self):
+    def __init__(self, cfg):
         super(TransformerLayer, self).__init__()
 
-        self.attention = SelfAttentionLayer()
-        self.intermediate = IntermediateLayer()
+        self.attention = SelfAttentionLayer(cfg)
+        self.intermediate = IntermediateLayer(cfg)
 
     def forward(self, hidden_states, attention_mask):
         attention_output = self.attention(hidden_states, attention_mask)
@@ -180,8 +179,8 @@ class SelfAttentionLayer(nn.Module):
     def __init__(self, cfg):
         super(SelfAttentionLayer, self).__init__()
 
-        self.num_attention_heads = cfg.num_attention_heads
-        self.attention_head_size = int(cfg.hidden_size / cfg.num_attention_heads)
+        self.num_attention_heads = cfg.num_heads
+        self.attention_head_size = int(cfg.hidden_size / cfg.num_heads)
         self.all_head_size = self.num_attention_heads * self.attention_head_size
 
         self.query = nn.Linear(cfg.hidden_size, self.all_head_size)
@@ -257,7 +256,7 @@ class LocalGraph(nn.Module):
         self.cfg = cfg
 
     def make_noise(self, scores):
-        noise = torch.rand(scores.shape).cuda()
+        noise = torch.rand(scores.shape, device=scores.device)
         noise = -torch.log(-torch.log(noise))
         return scores + noise
 
@@ -334,6 +333,6 @@ class RandomMaskSubgraphs(nn.Module):
         masked_rows = torch.unsqueeze(torch.LongTensor(masked_rows), -1)
         masked_cols = torch.unsqueeze(torch.LongTensor(masked_cols), -1)
         masked_edge = torch.hstack([masked_rows, masked_cols])
-        encoder_adj = self.normalize(torch.sparse.FloatTensor(torch.stack([rows, cols], dim=0), torch.ones_like(rows).cuda(), adj.shape))
+        encoder_adj = self.normalize(torch.sparse.FloatTensor(torch.stack([rows, cols], dim=0), torch.ones_like(rows), adj.shape))
 
         return encoder_adj, masked_edge

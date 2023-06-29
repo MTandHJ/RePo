@@ -3,7 +3,6 @@
 from typing import Union, Optional
 
 import torch, os
-import torch.nn as nn
 import numpy as np
 import scipy.sparse as sp
 
@@ -13,9 +12,8 @@ from freerec.data.postprocessing import RandomIDs, OrderedIDs
 from freerec.parser import Parser
 from freerec.launcher import Coach
 from freerec.models import RecSysArch
-from freerec.criterions import BCELoss4Logits
-from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID
+from freerec.utils import mkdirs
 
 from modules import Encoder, Decoder, SASRec, RandomMaskSubgraphs, LocalGraph
 
@@ -48,6 +46,7 @@ cfg.set_defaults(
     optimizer='adam',
     lr=1e-3,
     weight_decay=1.e-6,
+    eval_freq=1,
     seed=19260817,
 )
 cfg.compile()
@@ -67,10 +66,10 @@ class MAERec(RecSysArch):
         self.masker = RandomMaskSubgraphs(cfg)
         self.sampler = LocalGraph(cfg)
 
-        self.trn =  self.construct_ii_graph(dataset)
-        self.ii_dok = self.trn.todok()
-        self.ii_adj = self.make_torch_adj(self.trn)
-        self.ii_adj_all_one = self.make_all_one_adj(self.ii_adj)
+        self.trn =  self.construct_ii_graph(dataset) # Sparse Item-Item graph in coo format
+        self.ii_dok = self.trn.todok() # Sparse Item-Item graph in dok format
+        self.ii_adj: torch.Tensor = self.make_torch_adj(self.trn) # normalized adjacency matrix 
+        self.ii_adj_all_one: torch.Tensor = self.make_all_one_adj(self.ii_adj) # unnormalized adjacency matrix 
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -85,9 +84,10 @@ class MAERec(RecSysArch):
     def construct_ii_graph(self, dataset: RecDataSet):
         from freeplot.utils import import_pickle, export_pickle
         Item = dataset.fields[ITEM, ID]
+        path = os.path.join(cfg.dataset, str(cfg.ii_dist))
         try:
             indices = import_pickle(
-                os.path.join(cfg.dataset, str(cfg.ii_dist), "row_col_indices.pickle")
+                os.path.join(path, "row_col_indices.pickle")
             )
             row_indices, col_indices = indices['row'], indices['col']
         except ImportError:
@@ -99,12 +99,17 @@ class MAERec(RecSysArch):
                     row_indices.extend(seq[:-h])
                     col_indices.extend(seq[:-h])
                     col_indices.extend(seq[+h:])
+
+            row_indices = [idx + NUM_PADS for idx in row_indices]
+            col_indices = [idx + NUM_PADS for idx in col_indices]
+
+            mkdirs(path)
             export_pickle(
                 {'row': row_indices, 'col': col_indices},
-                os.path.join(cfg.dataset, str(cfg.ii_dist), "row_col_indices.pickle")
+                os.path.join(path, "row_col_indices.pickle")
             )
         values = np.ones_like(row_indices)
-        trn = sp.csr_matrix((values, (row_indices, col_indices)), shape=(Item.count, Item.count)).astype(np.float32)
+        trn = sp.csr_matrix((values, (row_indices, col_indices)), shape=(Item.count + NUM_PADS, Item.count + NUM_PADS)).astype(np.float32)
         return sp.coo_matrix(trn)
 
     def normalize(self, mat):
@@ -134,23 +139,23 @@ class MAERec(RecSysArch):
         masked_adj, masked_edg = self.masker(self.ii_adj, candidates)
         return sample_scr, masked_adj, masked_edg
 
-    def sample_pos_edges(self, masked_edges):
+    def sample_pos_edges(self, masked_edges: torch.Tensor):
         return masked_edges[torch.randperm(masked_edges.shape[0])[:cfg.batch_size_con]]
 
-    def sample_neg_edges(self, pos):
+    def sample_neg_edges(self, pos: torch.Tensor):
         neg = []
         for u, v in pos:
             cu_neg = []
             num_samp = cfg.num_reco_neg // 2
             for i in range(num_samp):
                 while True:
-                    v_neg = np.random.randint(1, cfg.item)
+                    v_neg = np.random.randint(1, cfg.num_items)
                     if (u, v_neg) not in self.ii_dok:
                         break
                 cu_neg.append([u, v_neg])
             for i in range(num_samp):
                 while True:
-                    u_neg = np.random.randint(1, cfg.item)
+                    u_neg = np.random.randint(1, cfg.num_items)
                     if (u_neg, v) not in self.ii_dok:
                         break
                 cu_neg.append([u_neg, v])
@@ -187,22 +192,49 @@ class MAERec(RecSysArch):
     def forward(
         self,
         seqs: torch.Tensor, positives: torch.Tensor, negatives: torch.Tensor,
-        masked_adj, masked_edg
+        masked_adj: torch.Tensor, masked_edg: torch.Tensor
     ):
+        r"""
+        Parameters:
+        -----------
+        seqs: torch.Tensor
+            a batch of sequence of items
+        positives: torch.Tensor
+            positive items for SASRec
+        negtives: torch.Tensor
+            negative items for SASRec
+        masked_adj: torch.Tensor
+            masked adjacency matrix for reconstruction tasks
+        masked_edg: torch.Tensor
+            masked edges for reconstruction tasks.
+
+        Flows:
+        -----
+        1. Encoder returns the item embeddinsg.
+        2. Seq embeddings will be given by SASRec and then the (binary) cross entropy loss will be calculated.
+        3. Positive and negative edges will be sampled.
+        4. Decoder predicts the masked edges and the correspoding loss will be calculated.
+
+        Returns
+        -------
+        loss_main: the main loss for SASRec
+        loss_reco: the reconstruction loss
+        loss_regu: the regularization loss
+        """
         item_emb, item_emb_his = self.encoder(masked_adj)
         seq_emb = self.recommender(seqs, item_emb)
-        tar_msk = pos > 0
+        tar_msk = positives > 0
         loss_main = self.calc_cross_entropy(seq_emb, item_emb[positives], item_emb[negatives], tar_msk)
 
         pos = self.sample_pos_edges(masked_edg)
-        neg = self.sample_neg_edges(pos, self.handler.ii_dok)
+        neg = self.sample_neg_edges(pos)
         loss_reco = self.decoder(item_emb_his, pos, neg)       
 
         loss_regu = self.calc_reg_loss()
         return loss_main, loss_reco, loss_regu
 
     def recommend(self, seqs: torch.Tensor, items: torch.Tensor):
-        item_emb, item_emb_his = self.encoder(self.handler.ii_adj)
+        item_emb, item_emb_his = self.encoder(self.ii_adj)
         seq_emb = self.recommender(seqs, item_emb)
         seq_emb = seq_emb[:, -1, :].unsqueeze(-1)  # (B, D, 1)
         item_emb = item_emb[items] # (B, K, D)
@@ -239,6 +271,10 @@ class CoachForMAERec(Coach):
                 loss_mask = -sample_scr.mean() * reward
                 self.loss_his = self.loss_his[-1:]
                 loss += loss_mask
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
@@ -260,6 +296,8 @@ def main():
 
     dataset = getattr(freerec.data.datasets.sequential, cfg.dataset)(root=cfg.root)
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
+
+    cfg.num_items = Item.count + NUM_PADS
 
     # trainpipe
     trainpipe = RandomIDs(
@@ -300,13 +338,7 @@ def main():
         indices=[1], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
 
-    Item.embed(
-        cfg.hidden_size, padding_idx = 0
-    )
-    tokenizer = FieldModuleList(dataset.fields)
-    model = MAERec(
-        tokenizer
-    )
+    model = MAERec(dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
@@ -321,7 +353,6 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=0.
         )
-    criterion = BCELoss4Logits()
 
     coach = CoachForMAERec(
         trainpipe=trainpipe,
@@ -329,7 +360,7 @@ def main():
         testpipe=testpipe,
         fields=dataset.fields,
         model=model,
-        criterion=criterion,
+        criterion=None,
         optimizer=optimizer,
         lr_scheduler=None,
         device=cfg.device
