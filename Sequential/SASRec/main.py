@@ -4,13 +4,14 @@ import torch
 import torch.nn as nn
 
 import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
+from freerec.data.postprocessing import RandomShuffledSource
 from freerec.parser import Parser
-from freerec.launcher import Coach
+from freerec.launcher import SeqCoach
 from freerec.models import RecSysArch
 from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, ITEM, ID
+from freerec.data.dataloader import load_seq_lpad_validpipe, load_seq_lpad_testpipe
 
 freerec.declare(version='0.4.3')
 
@@ -18,18 +19,16 @@ cfg = Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--num-heads", type=int, default=1)
 cfg.add_argument("--num-blocks", type=int, default=2)
-cfg.add_argument("--hidden-size", type=int, default=50)
+cfg.add_argument("--hidden-size", type=int, default=64)
 cfg.add_argument("--dropout-rate", type=float, default=0.2)
 
 cfg.set_defaults(
     description="SASRec",
     root="../../data",
-    dataset='MovieLens1M',
+    dataset='MovieLens1M_550_Chron',
     epochs=200,
     batch_size=128,
     optimizer='adam',
-    beta1=0.9,
-    beta2=0.98,
     lr=1e-3,
     weight_decay=0.,
     seed=1,
@@ -157,12 +156,7 @@ class SASRec(RecSysArch):
 
         return seqs.masked_fill(padding_mask, 0.)
 
-    def forward(self, 
-        seqs: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-
+    def forward(self, seqs: torch.Tensor):
         padding_mask = (seqs == 0).unsqueeze(-1)
         seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
         seqs *= self.Item.dimension ** 0.5
@@ -174,37 +168,36 @@ class SASRec(RecSysArch):
         
         features = self.lastLN(seqs) # (B, S, D)
 
+        return features
+
+    def predict(self, 
+        seqs: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor
+    ):
+        features = self.forward(seqs)
         posEmbds = self.Item.look_up(positives) # (B, S, D)
         negEmbds = self.Item.look_up(negatives) # (B, S, D)
 
         return features.mul(posEmbds).sum(-1), features.mul(negEmbds).sum(-1)
 
-    def recommend(
-        self,
-        seqs: torch.Tensor,
-        items: torch.Tensor
-    ):
-        padding_mask = (seqs == 0).unsqueeze(-1)
-        seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
-        seqs *= self.Item.dimension ** 0.5
-        seqs = self.embdDropout(self.position(seqs))
-        seqs.masked_fill_(padding_mask, 0.)
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
+        features = self.forward(seqs)[:, [-1], :]  # (B, D, 1)
+        others = self.Item.look_up(pool) # (B, K, D)
+        return features.mul(others).sum(-1)
 
-        for l in range(self.num_blocks):
-            seqs = self.after_one_block(seqs, padding_mask, l)
-        
-        features = self.lastLN(seqs)[:, -1, :].unsqueeze(-1) # (B, D, 1)
-        others = self.Item.look_up(items) # (B, 101, D)
-
-        return others.matmul(features).flatten(1) # (B, 101)
+    def recommend_from_full(self, seqs: torch.Tensor):
+        features = self.forward(seqs)[:, -1, :].unsqueeze(-1)  # (B, D, 1)
+        others = self.Item.embeddings.weight[NUM_PADS:] # (#Items, D)
+        return others.matmul(features).flatten(1) # (B, #Items)
 
 
-class CoachForSASRec(Coach):
+class CoachForSASRec(SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            posLogits, negLogits = self.model(seqs, positives, negatives)
+            posLogits, negLogits = self.model.predict(seqs, positives, negatives)
             posLabels = torch.ones_like(posLogits)
             negLabels = torch.zeros_like(negLogits)
             indices = positives != 0
@@ -216,19 +209,6 @@ class CoachForSASRec(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
-            )
-
 
 def main():
 
@@ -236,10 +216,10 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
-        field=User, datasize=User.count
+    trainpipe = RandomShuffledSource(
+        source=dataset.train().to_seqs(keepid=True)
     ).sharding_filter().seq_train_uniform_sampling_(
-        dataset # yielding (user, seqs, targets, negatives)
+        dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
     ).rshift_(
@@ -248,31 +228,17 @@ def main():
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    validpipe = load_seq_lpad_validpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
+    testpipe = load_seq_lpad_testpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
 
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
 
     Item.embed(
         cfg.hidden_size, padding_idx = 0

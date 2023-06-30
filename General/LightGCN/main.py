@@ -12,7 +12,7 @@ from torch_geometric.nn.conv.gcn_conv import gcn_norm
 import freerec
 from freerec.data.postprocessing import RandomIDs, OrderedIDs
 from freerec.parser import Parser
-from freerec.launcher import Coach
+from freerec.launcher import GenCoach
 from freerec.models import RecSysArch
 from freerec.criterions import BPRLoss
 from freerec.data.fields import FieldModuleList
@@ -27,8 +27,8 @@ cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
 cfg.set_defaults(
     description="LightGCN",
-    root="../data",
-    dataset='Gowalla_m1',
+    root="../../data",
+    dataset='Gowalla_10100811_Chron',
     epochs=1000,
     batch_size=2048,
     optimizer='adam',
@@ -90,30 +90,7 @@ class LightGCN(RecSysArch):
             self.graph.to(device)
         return super().to(device, dtype, non_blocking)
 
-    def forward(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        userEmbs = self.User.embeddings.weight
-        itemEmbs = self.Item.embeddings.weight
-        features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
-        avgFeats = features / (self.num_layers + 1)
-        for _ in range(self.num_layers):
-            features = self.conv(features, self.graph.adj_t)
-            avgFeats += features / (self.num_layers + 1)
-        userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
-
-        users, items = users, torch.cat(
-            [positives, negatives], dim=1
-        )
-        userFeats = userFeats[users] # B x 1 x D
-        itemFeats = itemFeats[items] # B x n x D
-        userEmbs = self.User.look_up(users) # B x 1 x D
-        itemEmbs = self.Item.look_up(items) # B x n x D
-        return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
-
-    def recommend(self):
+    def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
@@ -124,9 +101,27 @@ class LightGCN(RecSysArch):
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
 
+    def predict(
+        self, users: torch.Tensor,
+        positives: torch.Tensor,
+        negatives: torch.Tensor
+    ):
+        userFeats, itemFeats = self.forward()
 
-class CoachForLightGCN(Coach):
+        users, items = users, torch.cat(
+            [positives, negatives], dim=1
+        )
 
+        userFeats = userFeats[users] # B x 1 x D
+        itemFeats = itemFeats[items] # B x n x D
+        userEmbs = self.User.look_up(users) # B x 1 x D
+        itemEmbs = self.Item.look_up(items) # B x n x D
+        return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
+
+    def recommend_from_full(self):
+        return self.forward()
+
+class CoachForLightGCN(GenCoach):
 
     def reg_loss(self, userEmbds, itemEmbds):
         userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
@@ -137,8 +132,8 @@ class CoachForLightGCN(Coach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
-            preds, users, items = self.model(users, positives, negatives)
-            pos, neg = preds[:, 0], preds[:, 1]
+            scores, users, items = self.model.predict(users, positives, negatives)
+            pos, neg = scores[:, 0], scores[:, 1]
             reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
             loss = self.criterion(pos, neg) + reg_loss
 
@@ -146,24 +141,7 @@ class CoachForLightGCN(Coach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
-
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        userFeats, itemFeats = self.model.recommend()
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[seen] = -1e10
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
+            self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
 
 def main():
