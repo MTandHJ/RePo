@@ -2,20 +2,15 @@
 
 # UltraGCN
 
-
 [[official-code](https://github.com/xue-pai/UltraGCN)]
-
 
 
 ## Usage
 
-The hyper-parameters of `item_weight` and `norm_weight` are re-searched.
+Run with full-ranking
 
-### UltraGCN_base
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-    python main.py --config=base_configs/xxx.yaml
+or with sampled-based ranking
 
-
-### UltraGCN
-
-    python main.py --config=configs/xxx.yaml
+    python main.py --config=configs/xxx.yaml --ranking=pool

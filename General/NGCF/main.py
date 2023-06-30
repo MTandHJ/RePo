@@ -10,29 +10,21 @@ from torch_sparse import SparseTensor, matmul, mul, fill_diag
 from torch_sparse import sum as sparsesum
 from torch_geometric.data.data import Data
 from torch_geometric.nn import MessagePassing
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BPRLoss
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
 cfg.add_argument("--mess-dropout", type=float, default=0.1)
 cfg.set_defaults(
     description="NGCF",
-    root="../data",
-    dataset='Gowalla_m1',
+    root="../../data",
+    dataset='Gowalla_10100811_Chron',
     epochs=400,
     batch_size=1024,
     optimizer='adam',
@@ -72,7 +64,7 @@ class NGCFConv(MessagePassing):
         return matmul(adj_t, x, reduce=self.aggr)
         
 
-class NGCF(RecSysArch):
+class NGCF(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList, 
@@ -125,11 +117,7 @@ class NGCF(RecSysArch):
             self.graph.to(device)
         return super().to(device, dtype, non_blocking)
 
-    def forward(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
+    def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
@@ -140,27 +128,19 @@ class NGCF(RecSysArch):
         allFeats = torch.cat(allFeats, dim=-1)
         userFeats, itemFeats = torch.split(allFeats, (self.User.count, self.Item.count))
 
-        users, items = users, torch.cat(
-            [positives, negatives], dim=1
-        )
+        return userFeats, itemFeats
+
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
+        userFeats, itemFeats = self.forward()
         userFeats = userFeats[users] # B x 1 x D
         itemFeats = itemFeats[items] # B x n x D
         return torch.mul(userFeats, itemFeats).sum(-1), userFeats, itemFeats
 
-    def recommend(self):
-        userEmbs = self.User.embeddings.weight
-        itemEmbs = self.Item.embeddings.weight
-        features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
-        allFeats = [features]
-        for conv in self.convs:
-            features = conv(features, self.graph.adj_t)
-            allFeats.append(features)
-        allFeats = torch.cat(allFeats, dim=-1)
-        userFeats, itemFeats = torch.split(allFeats, (self.User.count, self.Item.count))
-        return userFeats, itemFeats
+    def recommend_from_full(self):
+        return self.forward()
 
-class CoachForNGCF(Coach):
 
+class CoachForNGCF(freerec.launcher.GenCoach):
 
     def reg_loss(self, userFeats: torch.Tensor, itemFeats: torch.Tensor):
         loss = userFeats.norm() + itemFeats.norm()
@@ -169,8 +149,11 @@ class CoachForNGCF(Coach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
-            preds, users, items = self.model(users, positives, negatives)
-            pos, neg = preds[:, 0], preds[:, 1]
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            scores, users, items = self.model.predict(users, items)
+            pos, neg = scores[:, 0], scores[:, 1]
             reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
             loss = self.criterion(pos, neg) + reg_loss
 
@@ -178,24 +161,7 @@ class CoachForNGCF(Coach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=preds.size(0), mode="mean", prefix='train', pool=['LOSS'])
-
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        userFeats, itemFeats = self.model.recommend()
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[seen] = -1e10
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
+            self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
 
 def main():
@@ -204,28 +170,17 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
+    trainpipe = freerec.data.postprocessing.source.RandomIDs(
         field=User, datasize=dataset.train().datasize
     ).sharding_filter().gen_train_uniform_sampling_(
         dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
@@ -247,7 +202,7 @@ def main():
             model.parameters(), lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
         )
-    criterion = BPRLoss()
+    criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForNGCF(
         trainpipe=trainpipe,

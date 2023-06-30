@@ -10,19 +10,12 @@ from torch_geometric.nn import LGConv
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import GenCoach
-from freerec.models import RecSysArch
-from freerec.criterions import BPRLoss
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
 cfg.set_defaults(
@@ -39,7 +32,7 @@ cfg.set_defaults(
 cfg.compile()
 
 
-class LightGCN(RecSysArch):
+class LightGCN(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList, 
@@ -101,17 +94,8 @@ class LightGCN(RecSysArch):
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
 
-    def predict(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
         userFeats, itemFeats = self.forward()
-
-        users, items = users, torch.cat(
-            [positives, negatives], dim=1
-        )
-
         userFeats = userFeats[users] # B x 1 x D
         itemFeats = itemFeats[items] # B x n x D
         userEmbs = self.User.look_up(users) # B x 1 x D
@@ -121,7 +105,8 @@ class LightGCN(RecSysArch):
     def recommend_from_full(self):
         return self.forward()
 
-class CoachForLightGCN(GenCoach):
+
+class CoachForLightGCN(freerec.launcher.GenCoach):
 
     def reg_loss(self, userEmbds, itemEmbds):
         userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
@@ -132,7 +117,10 @@ class CoachForLightGCN(GenCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
-            scores, users, items = self.model.predict(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=1
+            )
+            scores, users, items = self.model.predict(users, items)
             pos, neg = scores[:, 0], scores[:, 1]
             reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
             loss = self.criterion(pos, neg) + reg_loss
@@ -150,28 +138,17 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
+    trainpipe = freerec.data.postprocessing.source.RandomIDs(
         field=User, datasize=dataset.train().datasize
     ).sharding_filter().gen_train_uniform_sampling_(
         dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
@@ -193,7 +170,7 @@ def main():
             model.parameters(), lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
         )
-    criterion = BPRLoss()
+    criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForLightGCN(
         trainpipe=trainpipe,

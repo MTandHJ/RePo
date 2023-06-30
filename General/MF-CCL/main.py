@@ -8,20 +8,12 @@ import torch.nn.functional as F
 import torchdata.datapipes as dp
 
 import freerec
-from freerec.data.postprocessing import OrderedIDs, RandomShuffledSource
-from freerec.data.postprocessing.sampler import GenTrainUniformSampler
-from freerec.criterions import BaseCriterion
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-negs", type=int, default=1000) # 100,500,1000
 cfg.add_argument("--margin", type=float, default=.9) # 0:1:0.1
@@ -31,7 +23,7 @@ cfg.add_argument("--unseen-only", type=eval, choices=('True', 'False'), default=
 cfg.set_defaults(
     description="MF-CCL",
     root="../../data",
-    dataset="Yelp18_m1",
+    dataset="Yelp2018_10104811_Chron",
     epochs=100,
     batch_size=512,
     optimizer='adam',
@@ -45,7 +37,7 @@ cfg.compile()
 assert isinstance(cfg.unseen_only, bool), f"`unseen_only' should be `bool' but type `{type(cfg.unseen_only)}' received ..."
 
 
-class MFCCL(RecSysArch):
+class MFCCL(freerec.models.RecSysArch):
 
     def __init__(
         self, tokenizer: FieldModuleList,
@@ -70,25 +62,19 @@ class MFCCL(RecSysArch):
             elif isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=1e-4)
 
-    def forward(
-        self, 
-        users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        users, items = users, torch.cat((positives, negatives), dim=-1)
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
         itemFeats = F.normalize(self.Item.look_up(items), dim=-1) # B x K x D
         userFeats = self.dropout(F.normalize(self.User.look_up(users), dim=-1)) # B x 1 x D
         scores = (userFeats * itemFeats).sum(-1) # cosine score, B x K
         return scores
 
-    def recommend(self, users: torch.Tensor):
+    def recommend_from_full(self):
         itemFeats = F.normalize(self.Item.embeddings.weight) # N x D
-        userFeats = self.dropout(F.normalize(self.User.look_up(users), dim=-1)).squeeze() # B x 1 x D
-        return userFeats.matmul(itemFeats.t())
+        userFeats = F.normalize(self.User.embeddings.weight) # N x D
+        return userFeats, itemFeats
 
 
-class CoachForMFCCL(Coach):
+class CoachForMFCCL(freerec.launcher.GenCoach):
 
     def sample_negs_from_all(self, users, low, high):
         return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
@@ -99,7 +85,10 @@ class CoachForMFCCL(Coach):
             users, positives, negatives = [col.to(self.device) for col in data]
             if not self.cfg.unseen_only:
                 negatives = self.sample_negs_from_all(users, 0, Item.count)
-            scores = self.model(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            scores = self.model.predict(users, items)
             loss = self.criterion(scores)
             loss += self.criterion.regularize(
                 self.model.tokenizer.parameters(),
@@ -113,22 +102,8 @@ class CoachForMFCCL(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            scores = self.model.recommend(users)
-            scores[seen] = -1e10
 
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
-
-
-class CosineContrastiveLoss(BaseCriterion):
+class CosineContrastiveLoss(freerec.criterions.BaseCriterion):
 
     def __init__(
         self, margin: float = cfg.margin, 
@@ -153,7 +128,7 @@ class CosineContrastiveLoss(BaseCriterion):
             return loss
 
 @dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")
-class GenTrainShuffleSampler(GenTrainUniformSampler):
+class GenTrainShuffleSampler(freerec.data.postprocessing.sampler.GenTrainUniformSampler):
 
     def __iter__(self):
         for user, pos in self.source:
@@ -163,48 +138,29 @@ class GenTrainShuffleSampler(GenTrainUniformSampler):
                 else:
                     yield [user, pos, -1]
 
-def take_all(dataset):
-    data = []
-    for chunk in dataset.train():
-        data.extend(list(zip(chunk[USER, ID], chunk[ITEM, ID])))
-    return data
-
-
 def main():
 
     dataset = getattr(freerec.data.datasets.general, cfg.dataset)(cfg.root)
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        take_all(dataset)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_pairs()
     ).sharding_filter().gen_train_shuffle_uniform_sampling_(
         dataset, num_negatives=cfg.num_negs
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
         cfg.embedding_dim, ID
     )
-    User, Item = tokenizer[USER], tokenizer[ITEM]
     model = MFCCL(
         tokenizer
     )

@@ -8,21 +8,16 @@ import numpy as np
 import scipy.sparse as sp
 from torch_geometric.data import Data, HeteroData 
 from torch_geometric.utils import to_scipy_sparse_matrix
+from freeplot.utils import import_pickle, export_pickle
 
 import freerec
-from freeplot.utils import export_pickle, import_pickle
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BaseCriterion
-from freerec.data.datasets import Gowalla_m1, Yelp18_m1, AmazonBooks_m1
-from freerec.data.fields import Tokenizer
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.fields import FieldModuleList
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 from freerec.utils import mkdirs, timemeter
 
 freerec.declare(version="0.4.3")
 
-cfg = Parser()
+cfg = freerec.parpser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--filter-type", choices=('both', 'smooth'), default='smooth')
 cfg.add_argument("--smooth-ratio", type=float, default=0.1)
@@ -34,7 +29,7 @@ cfg.add_argument("--criterion", type=str, default='adaptive')
 cfg.set_defaults(
     description="GDE",
     root="../../data",
-    dataset='Gowalla_m1',
+    dataset='Gowalla_10100811_Chron',
     epochs=400,
     batch_size=256,
     optimizer='sgd',
@@ -44,11 +39,10 @@ cfg.set_defaults(
 cfg.compile()
 
 
-
-class GDE(RecSysArch):
+class GDE(freerec.models.RecSysArch):
 
     def __init__(
-        self, tokenizer: Tokenizer, 
+        self, tokenizer: FieldModuleList, 
         graph: Data,
     ) -> None:
         super().__init__()
@@ -192,27 +186,28 @@ class GDE(RecSysArch):
             self.graph.to(device)
         return super().to(device, dtype, non_blocking)
 
-    def forward(
-        self, users: Optional[Dict[str, torch.Tensor]] = None, 
-        items: Optional[Dict[str, torch.Tensor]] = None
-    ):
+    def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
+        return userEmbs, itemEmbs
 
-        if self.training:
-            users, items = users[self.User.name], items[self.Item.name]
-            if cfg.dropout_rate == 0:
-                userFeats = self.A_u[users].matmul(userEmbs)
-                itemFeats = self.A_i[items].matmul(itemEmbs)
-            else:
-                userFeats = self.dropout(self.A_u[users]).matmul(userEmbs) * (1 - cfg.dropout_rate)
-                itemFeats = self.dropout(self.A_i[items]).matmul(itemEmbs) * (1 - cfg.dropout_rate)
-            return (userFeats * itemFeats).sum(-1), userFeats, itemFeats
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
+        userEmbs, itemEmbs = self.forward()
+        users, items = users[self.User.name], items[self.Item.name]
+        if cfg.dropout_rate == 0:
+            userFeats = self.A_u[users].matmul(userEmbs)
+            itemFeats = self.A_i[items].matmul(itemEmbs)
         else:
-            return self.A_u.mm(userEmbs), self.A_i.mm(itemEmbs)
+            userFeats = self.dropout(self.A_u[users]).matmul(userEmbs) * (1 - cfg.dropout_rate)
+            itemFeats = self.dropout(self.A_i[items]).matmul(itemEmbs) * (1 - cfg.dropout_rate)
+        return (userFeats * itemFeats).sum(-1), userFeats, itemFeats
 
+    def recommend_from_full(self):
+        userEmbs = self.User.embeddings.weight
+        itemEmbs = self.Item.embeddings.weight
+        return self.A_u.mm(userEmbs), self.A_i.mm(itemEmbs)
 
-class AdaptiveLoss(BaseCriterion):
+class AdaptiveLoss(freerec.criterions.BaseCriterion):
 
     def forward(self, scores: torch.Tensor):
         positives = scores[:, 0]
@@ -225,22 +220,23 @@ class AdaptiveLoss(BaseCriterion):
         return -torch.log(out).mean()
 
 
-class CoachForGDE(Coach):
-
+class CoachForGDE(freerec.launcher.GenCoach):
 
     def reg_loss(self, userFeats, itemFeats):
         loss = userFeats.pow(2).sum() + itemFeats.pow(2).sum()
         loss = loss / userFeats.size(0)
         return loss
 
-    def train_per_epoch(self):
-        for users, items in self.dataloader:
-            users = {name: val.to(self.device) for name, val in users.items()}
-            items = {name: val.to(self.device) for name, val in items.items()}
-
-            scores, userFeats, itemFeats = self.model(users, items)
-            reg_loss = self.reg_loss(userFeats, itemFeats)
-            loss = self.criterion(scores) + reg_loss * self.cfg.weight_decay
+    def train_per_epoch(self, epoch: int):
+        for data in self.dataloader:
+            users, positives, negatives = [col.to(self.device) for col in data]
+            items = torch.cat(
+                [positives, negatives], dim=1
+            )
+            scores, users, items = self.model.predict(users, items)
+            pos, neg = scores[:, 0], scores[:, 1]
+            reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
+            loss = self.criterion(pos, neg) + reg_loss
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -248,47 +244,33 @@ class CoachForGDE(Coach):
             
             self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, prefix: str = 'valid'):
-        User = self.fields[USER, ID]
-        Item = self.fields[ITEM, ID]
-        userFeats, itemFeats = self.model()
-        for users, items in self.dataloader:
-            users = users[User.name].to(self.device)
-            targets = items[Item.name].to(self.device)
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[targets == -1] = -1e10
-            targets[targets == -1] = 0
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'PRECISION', 'RECALL', 'HITRATE']
-            )
-
 
 def main():
 
-    if cfg.dataset == "Gowalla_m1":
-        basepipe = Gowalla_m1(cfg.root)
-    elif cfg.dataset == "Yelp18_m1":
-        basepipe = Yelp18_m1(cfg.root)
-    elif cfg.dataset == "AmazonBooks_m1":
-        basepipe = AmazonBooks_m1(cfg.root)
-    else:
-        raise ValueError("Dataset should be Gowalla_m1, Yelp18_m1 or AmazonBooks_m1")
-    trainpipe = basepipe.shard_().uniform_sampling_(num_negatives=1).tensor_().split_(cfg.batch_size)
-    validpipe = basepipe.trisample_(batch_size=cfg.batch_size).shard_().tensor_()
-    dataset = trainpipe.wrap_(validpipe).group_((USER, ITEM))
+    dataset = getattr(freerec.data.datasets.general, cfg.dataset)(cfg.root)
+    User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
-    tokenizer = Tokenizer(basepipe.fields.groupby(ID))
+    # trainpipe
+    trainpipe = freerec.data.postprocessing.source.RandomIDs(
+        field=User, datasize=dataset.train().datasize
+    ).sharding_filter().gen_train_uniform_sampling_(
+        dataset, num_negatives=1
+    ).batch(cfg.batch_size).column_().tensor_()
+
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
+    )
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
+    )
+
+    tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
         cfg.embedding_dim, ID
     )
-    User, Item = tokenizer[USER], tokenizer[ITEM]
     model = GDE(
-        tokenizer, basepipe.train().to_bigraph(User, Item)
+        tokenizer,
+        dataset.train().to_bigraph((USER, ID), (ITEM, ID))
     )
 
     if cfg.optimizer == 'sgd':
@@ -305,20 +287,23 @@ def main():
     criterion = AdaptiveLoss()
 
     coach = CoachForGDE(
+        trainpipe=trainpipe,
+        validpipe=validpipe,
+        testpipe=testpipe,
+        fields=dataset.fields,
         model=model,
-        dataset=dataset,
         criterion=criterion,
         optimizer=optimizer,
         lr_scheduler=None,
         device=cfg.device
     )
-    coach.compile(cfg, monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'])
+    coach.compile(
+        cfg, 
+        monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'],
+        which4best='ndcg@20'
+    )
     coach.fit()
-
 
 
 if __name__ == "__main__":
     main()
-
-
-

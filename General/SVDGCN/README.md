@@ -2,12 +2,15 @@
 
 # SVD-GCN
 
-
 [official-code](https://github.com/tanatosuu/svd_gcn)
+
 
 ## Usage
 
-`version: 0.3.1`
+Run with full-ranking
 
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-    python svd_gcn_base.py --config=Base/xxx.yaml
+or with sampled-based ranking
+
+    python main.py --config=configs/xxx.yaml --ranking=pool

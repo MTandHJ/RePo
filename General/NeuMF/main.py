@@ -1,24 +1,15 @@
 
 
-from typing import Dict, Optional, Union
-
 import torch
 import torch.nn as nn
 
 import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=8)
 cfg.add_argument("--num-negs", type=int, default=4)
 cfg.add_argument("--hidden-sizes", type=str, default="64,32,16,8")
@@ -37,7 +28,8 @@ cfg.compile()
 
 cfg.hidden_sizes = tuple(map(int, cfg.hidden_sizes.split(","))) 
 
-class NeuMF(RecSysArch):
+
+class NeuMF(freerec.models.RecSysArch):
 
     def __init__(self, fields: FieldModuleList) -> None:
         super().__init__()
@@ -76,11 +68,7 @@ class NeuMF(RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    def _forward(
-        self,
-        users: torch.Tensor,
-        items: torch.Tensor
-    ):
+    def forward(self, users: torch.Tensor, items: torch.Tensor):
         userEmbs4MLP = self.user4mlp(users) # (B, 1, D)
         itemEmbs4MLP = self.item4mlp(items) # (B, K, D)
         userEmbs4MLP, itemEmbs4MLP = self.broadcast(
@@ -95,30 +83,29 @@ class NeuMF(RecSysArch):
         features4MF = userEmbs4MF.mul(itemEmbs4MF) # (B, K, D')
 
         features = torch.cat((features4MLP, features4MF), dim=-1) # (B, K, 2D')
-        logits = self.fc(features).squeeze(-1) # (B, K, 1)
+        logits = self.fc(features).squeeze(-1) # (B, K)
         return logits
 
-    def forward(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        users, items = users, torch.cat(
-            [positives, negatives], dim=1
-        )
-        return self._forward(users, items)
+    def predict(self, users: torch.Tensor, items):
+        return self.forward(users, items)
 
-    def recommend(self, users: torch.Tensor):
+    def recommend_from_pool(self, users: torch.Tensor, pool: torch.Tensor):
+        return self.forward(users, pool)
+
+    def recommend_from_full(self, users: torch.Tensor):
         items = torch.tensor(range(self.Item.count), dtype=torch.long, device=self.device).unsqueeze(0)
-        return self._forward(users, items)
+        return self.forward(users, items)
 
 
-class CoachForNeuMF(Coach):
+class CoachForNeuMF(freerec.launcher.GenCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
-            logits = self.model(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            logits = self.model(users, items)
             labels = torch.zeros_like(logits)
             labels[:, 0].fill_(1)
             loss = self.criterion(logits, labels)
@@ -130,17 +117,28 @@ class CoachForNeuMF(Coach):
             self.monitor(loss.item(), n=logits.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            preds = self.model.recommend(users)
-            preds[seen] = -1e10
+        for data in self.dataloader:
+            if len(data) == 2:
+                users, pool = [col.to(self.device) for col in data]
+                scores = self.model.recommend(users=users, pool=pool)
+                targets = torch.zeros_like(scores)
+                targets[:, 0].fill_(1)
+            elif len(data) == 3:
+                users, unseen, seen = data
+                users = users.to(self.device).data
+                seen = seen.to_csr().to(self.device).to_dense().bool()
+                targets = unseen.to_csr().to(self.device).to_dense()
+                scores = self.model.recommend(users=users)
+                scores[seen] = -1e23
+            else:
+                raise NotImplementedError(
+                    f"GenCoach's `evaluate` expects the `data` to be the length of 2 or 3, but {len(data)} received ..."
+                )
 
             self.monitor(
-                preds, targets,
+                scores, targets,
                 n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
+                pool=['HITRATE', 'PRECISION', 'RECALL', 'NDCG', 'MRR']
             )
 
 
@@ -150,28 +148,17 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
+    trainpipe = freerec.data.postprocessing.source.RandomIDs(
         field=User, datasize=dataset.train().datasize
     ).sharding_filter().gen_train_uniform_sampling_(
-        dataset, num_negatives=cfg.num_negs
+        dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(128).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=128, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(128).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=128, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
@@ -190,7 +177,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = BCELoss4Logits()
+    criterion = freerec.criterions.BCELoss4Logits()
 
     coach = CoachForNeuMF(
         trainpipe=trainpipe,

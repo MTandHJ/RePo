@@ -8,22 +8,16 @@ import scipy.sparse as sp
 
 from torch_geometric.data import HeteroData 
 from torch_geometric.utils import to_scipy_sparse_matrix
-
-import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-from freerec.utils import mkdirs, timemeter
 from freeplot.utils import export_pickle, import_pickle
 
+import freerec
+from freerec.data.fields import FieldModuleList
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
+from freerec.utils import mkdirs, timemeter
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--alpha", type=int, default=0)
 cfg.add_argument("--beta", type=float, default=2.)
@@ -43,7 +37,7 @@ cfg.set_defaults(
 cfg.compile()
 
 
-class SVDGCN(RecSysArch):
+class SVDGCN(freerec.models.RecSysArch):
 
     def __init__(self, tokenizer: FieldModuleList) -> None:
         super().__init__()
@@ -112,7 +106,7 @@ class SVDGCN(RecSysArch):
         data = {'U': U.cpu(), 'vals': vals.cpu(), 'V': V.cpu()}
         return data
 
-    def forward(
+    def predict(
         self, users: torch.Tensor,
         positives: torch.Tensor,
         negatives: torch.Tensor
@@ -126,16 +120,16 @@ class SVDGCN(RecSysArch):
         regu_term = self.reg*(final_user**2 + final_pos**2+final_nega**2).sum()
         return (-torch.log(out).sum() + regu_term) / samp_user.size(0), samp_user.size(0)
     
-    def recommend(self):
+    def recommend_from_full(self):
         return self.user_vector.mm(self.FS), self.item_vector.mm(self.FS)
 
 
-class CoachForSVDGCN(Coach):
+class CoachForSVDGCN(freerec.launcher.GenCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
-            loss, bz = self.model(users, positives, negatives)
+            loss, bz = self.model.predict(users, positives, negatives)
 	
             loss.backward()
             with torch.no_grad():
@@ -144,23 +138,6 @@ class CoachForSVDGCN(Coach):
             
             self.monitor(loss.item(), n=bz, mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        userFeats, itemFeats = self.model.recommend()
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[seen] = -1e10
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
-
 
 def main():
 
@@ -168,28 +145,17 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
+    trainpipe = freerec.data.postprocessing.source.RandomIDs(
         field=User, datasize=dataset.train().datasize
     ).sharding_filter().gen_train_uniform_sampling_(
         dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)

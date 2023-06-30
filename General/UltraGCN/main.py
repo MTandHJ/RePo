@@ -8,22 +8,16 @@ import torch, random
 import torch.nn as nn
 import torch.nn.functional as F
 import torchdata.datapipes as dp
-from functools import partial
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.utils import degree, to_scipy_sparse_matrix
 
 import freerec
-from freerec.data.postprocessing import BaseProcessor, OrderedIDs
-from freerec.data.postprocessing.sampler import GenTrainUniformSampler
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-negs", type=int, default=1500)
 cfg.add_argument("--num-neighbors", type=int, default=10)
@@ -49,11 +43,10 @@ cfg.set_defaults(
 )
 cfg.compile()
 
-
 assert isinstance(cfg.unseen_only, bool)
 
 
-class UltraGCN(RecSysArch):
+class UltraGCN(freerec.models.RecSysArch):
 
     def __init__(
         self, tokenizer: FieldModuleList, 
@@ -71,7 +64,6 @@ class UltraGCN(RecSysArch):
         self.reset_parameters()
 
     def reset_parameters(self):
-        """Initializes the module parameters."""
         for m in self.modules():
             if isinstance(m, nn.Embedding):
                 nn.init.normal_(m.weight, std=cfg.init_weight)
@@ -174,25 +166,23 @@ class UltraGCN(RecSysArch):
             loss += torch.sum(parameter ** 2)
         return loss / 2
 
-    def forward(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        items = torch.cat([positives, negatives], dim=1)
+    def forward(self):
+        userEmbds = self.User.embeddings.weight # N x D
+        itemEmbds = self.Item.embeddings.weight # M x D
+        return userEmbds, itemEmbds
+
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
         loss = self.constraint_for_user_item(users, items) + \
                 self.regularize() * cfg.norm_weight
         if cfg.item_weight > 0.:
             loss += self.constraint_for_item_item(users, items) * cfg.item_weight
         return loss
     
-    def recommend(self):
-        userEmbds = self.User.embeddings.weight # N x D
-        itemEmbds = self.Item.embeddings.weight # M x D
-        return userEmbds, itemEmbds
+    def recommend_from_full(self):
+        return self.forward()
 
 
-class CoachForUltraGCN(Coach):
+class CoachForUltraGCN(freerec.launcher.GenCoach):
 
     def sample_negs_from_all(self, users, low, high):
         return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
@@ -203,7 +193,10 @@ class CoachForUltraGCN(Coach):
             users, positives, negatives = [col.to(self.device) for col in data]
             if not self.cfg.unseen_only:
                 negatives = self.sample_negs_from_all(users, 0, Item.count)
-            loss = self.model(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            loss = self.model.predict(users, items)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -211,49 +204,9 @@ class CoachForUltraGCN(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="sum", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        userFeats, itemFeats = self.model.recommend()
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[seen] = -1e10
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
-
-
-class RandomShuffledSource(BaseProcessor):
-    r"""
-    DataPipe that generates shuffled source.
-
-    Parameters:
-    -----------
-    source: Iterable 
-        The source data to start.
-    """
-
-    def __init__(self, source) -> None:
-        super().__init__(None)
-
-        self.source = source
-        self._rng = partial(
-            random.shuffle, x=self.source
-        )
-
-    def __iter__(self):
-        self._rng()
-        yield from self.source
-
 
 @dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")
-class GenTrainShuffleSampler(GenTrainUniformSampler):
+class GenTrainShuffleSampler(freerec.data.postprocessing.sampler.GenTrainUniformSampler):
 
     def __iter__(self):
         for user, pos in self.source:
@@ -276,28 +229,17 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        take_all(dataset)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_pairs()
     ).sharding_filter().gen_train_shuffle_uniform_sampling_(
         dataset, num_negatives=cfg.num_negs
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
@@ -341,4 +283,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

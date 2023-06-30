@@ -1,26 +1,17 @@
 
 
-from typing import Dict, Optional, Union
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchdata.datapipes as dp
 
 import freerec
-from freerec.data.postprocessing import OrderedIDs, RandomShuffledSource, GenTrainUniformSampler
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BPRLoss
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
-
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--loss-type", type=str, choices=('DNS', 'Softmax'), default='DNS')
 cfg.add_argument("--num-negs", type=int, default=200)
@@ -43,7 +34,7 @@ cfg.set_defaults(
 cfg.compile()
 
 
-class MFOPAUC(RecSysArch):
+class MFOPAUC(freerec.models.RecSysArch):
 
     def __init__(self, tokenizer: FieldModuleList) -> None:
         super().__init__()
@@ -66,23 +57,19 @@ class MFOPAUC(RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    def forward(
-        self, users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        users, items = users, torch.cat(
-            [positives, negatives], dim=1
-        )
+    def forward(self):
+        return self.User.embeddings.weight, self.Item.embeddings.weight
+
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
         userEmbs = self.User.look_up(users) # B x 1 x D
         itemEmbs = self.Item.look_up(items) # B x n x D
         return torch.mul(userEmbs, itemEmbs).sum(-1)
     
-    def recommend(self):
-        return self.User.embeddings.weight, self.Item.embeddings.weight
+    def recommend_from_full(self):
+        return self.forward()
 
 
-class CoachForMFOPAUC(Coach):
+class CoachForMFOPAUC(freerec.launcher.GenCoach):
 
     def uniform_sample_negs(self, users: torch.Tensor, num_items: int):
         bsz = users.size(0)
@@ -99,9 +86,12 @@ class CoachForMFOPAUC(Coach):
     def train_per_epoch(self, epoch: int):
         Item = self.fields[ITEM, ID]
         for data in self.dataloader:
-            users, positives, _ = [col.to(self.device) for col in data]
+            users, positives = [col.to(self.device) for col in data]
             negatives = self.uniform_sample_negs(users, Item.count)
-            scores = self.model(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            scores = self.model.predict(users, items)
             pos, negs = scores[:, [0]], scores[:, 1:]
             if self.cfg.loss_type == 'DNS':
                 loss = self.criterion(
@@ -123,37 +113,13 @@ class CoachForMFOPAUC(Coach):
         
         self.lr_scheduler.step()
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        userFeats, itemFeats = self.model.recommend()
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            users = userFeats[users].flatten(1) # B x D
-            items = itemFeats.flatten(1) # N x D
-            preds = users @ items.T # B x N
-            preds[seen] = -1e10
-
-            self.monitor(
-                preds, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
-            )
-
 
 @dp.functional_datapipe("gen_train_uniform_yielding__")
-class GenTrainShuffleSampler(GenTrainUniformSampler):
-
+class GenTrainShuffleSampler(freerec.data.postprocessing.sampler.GenTrainUniformSampler):
     def __iter__(self):
         for user, pos in self.source:
             if self._check(user):
-                yield [user, pos, -1]
-
-def take_all(dataset):
-    data = []
-    for chunk in dataset.train():
-        data.extend(list(zip(chunk[USER, ID], chunk[ITEM, ID])))
-    return data
+                yield [user, pos]
 
 
 def main():
@@ -162,29 +128,18 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        source=take_all(dataset)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_pairs()
     ).sharding_filter().gen_train_uniform_yielding__(
         dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
-    )
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
+    )   
 
     tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
@@ -205,7 +160,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = BPRLoss(reduction='none')
+    criterion = freerec.criterions.BPRLoss(reduction='none')
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.stepsize, cfg.gamma)
 
     coach = CoachForMFOPAUC(
@@ -229,4 +184,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

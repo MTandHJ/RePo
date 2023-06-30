@@ -11,20 +11,14 @@ from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import bipartite_subgraph
 
 import freerec
-from freerec.data.postprocessing import OrderedIDs, RandomShuffledSource
-from freerec.data.postprocessing.sampler import GenTrainUniformSampler
-from freerec.criterions import BaseCriterion
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, UNSEEN, SEEN
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 
 freerec.declare(version='0.4.3')
 
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-negs", type=int, default=1000) # 100,500,1000
 cfg.add_argument("--gamma", type=float, default=1.) # 0., 0.5, 0.1
@@ -36,7 +30,7 @@ cfg.add_argument("--maxlen", type=int, default=500)
 cfg.set_defaults(
     description="SimpleX",
     root="../../data",
-    dataset="Yelp18_m1",
+    dataset="Yelp2018_10104811_Chron",
     epochs=100,
     batch_size=1024,
     optimizer='adam',
@@ -75,7 +69,7 @@ class AvgConv(MessagePassing):
         return self.linear(items)
 
 
-class SimpleX(RecSysArch):
+class SimpleX(freerec.models.RecSysArch):
 
     def __init__(
         self, tokenizer: FieldModuleList, graph: HeteroData, 
@@ -151,34 +145,28 @@ class SimpleX(RecSysArch):
         userEmbds = self.User.look_up(users)
         return userEmbds * self.gamma + self.aggregator(items, edge_index)[users] * (1 - self.gamma)
 
-    def initialize(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.)
-            elif isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight, std=1e-4)
-
-    def forward(
-        self, 
-        users: torch.Tensor,
-        positives: torch.Tensor,
-        negatives: torch.Tensor
-    ):
-        users, items = users, torch.cat((positives, negatives), dim=-1)
+    def forward(self, users: torch.Tensor, items: torch.Tensor):
         itemFeats = F.normalize(self.Item.look_up(items), dim=-1) # B x K x D
-        userFeats = self.dropout(F.normalize(self.aggregate(users), dim=-1)) # B x 1 x D
+        userFeats = F.normalize(self.aggregate(users), dim=-1)  # B x 1 x D
+        return userFeats, itemFeats
+
+    def predict(self, users: torch.Tensor, items: torch.Tensor):
+        userFeats, itemFeats = self.forward(users, items)
+        userFeats = self.dropout(userFeats)
         scores = (userFeats * itemFeats).sum(-1) # cosine score, B x K
         return scores
 
-    def recommend(self, users: torch.Tensor):
-        itemFeats = F.normalize(self.Item.embeddings.weight) # N x D
-        userFeats = self.dropout(F.normalize(self.aggregate(users), dim=-1).squeeze(1)) # B x D
-        return userFeats.matmul(itemFeats.t())
+    def recommend_from_pool(self, users: torch.Tensor, pool: torch.Tensor):
+        userFeats, itemFeats = self.forward(users, pool)
+        return userFeats.mul(itemFeats).sum(-1)
+
+    def recommend_from_full(self, users: torch.Tensor):
+        items = torch.tensor(range(self.Item.count), dtype=torch.long, device=self.device).unsqueeze(0)
+        userFeats, itemFeats = self.forward(users, items)
+        return userFeats.mul(itemFeats).sum(-1)
 
 
-class CoachForSimpleX(Coach):
+class CoachForSimpleX(freerec.launcher.GenCoach):
 
     def sample_negs_from_all(self, users, low, high):
         return torch.randint(low, high, size=(len(users), cfg.num_negs), device=self.device)
@@ -189,7 +177,10 @@ class CoachForSimpleX(Coach):
             users, positives, negatives = [col.to(self.device) for col in data]
             if not self.cfg.unseen_only:
                 negatives = self.sample_negs_from_all(users, 0, Item.count)
-            scores = self.model(users, positives, negatives)
+            items = torch.cat(
+                [positives, negatives], dim=-1
+            )
+            scores = self.model.predict(users, items)
             loss = self.criterion(scores)
             loss += self.criterion.regularize(
                 self.model.tokenizer.parameters(),
@@ -204,21 +195,32 @@ class CoachForSimpleX(Coach):
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for user, unseen, seen in self.dataloader:
-            users = user.to(self.device).data
-            seen = seen.to_csr().to(self.device).to_dense().bool()
-            targets = unseen.to_csr().to(self.device).to_dense()
-            scores = self.model.recommend(users)
-            scores[seen] = -1e10
+        for data in self.dataloader:
+            if len(data) == 2:
+                users, pool = [col.to(self.device) for col in data]
+                scores = self.model.recommend(users=users, pool=pool)
+                targets = torch.zeros_like(scores)
+                targets[:, 0].fill_(1)
+            elif len(data) == 3:
+                users, unseen, seen = data
+                users = users.to(self.device).data
+                seen = seen.to_csr().to(self.device).to_dense().bool()
+                targets = unseen.to_csr().to(self.device).to_dense()
+                scores = self.model.recommend(users=users)
+                scores[seen] = -1e23
+            else:
+                raise NotImplementedError(
+                    f"GenCoach's `evaluate` expects the `data` to be the length of 2 or 3, but {len(data)} received ..."
+                )
 
             self.monitor(
                 scores, targets,
                 n=len(users), mode="mean", prefix=prefix,
-                pool=['NDCG', 'RECALL']
+                pool=['HITRATE', 'PRECISION', 'RECALL', 'NDCG', 'MRR']
             )
 
 
-class CosineContrastiveLoss(BaseCriterion):
+class CosineContrastiveLoss(freerec.criterions.BaseCriterion):
 
     def __init__(
         self, margin: float = cfg.margin, 
@@ -243,7 +245,7 @@ class CosineContrastiveLoss(BaseCriterion):
             return loss
 
 @dp.functional_datapipe("gen_train_shuffle_uniform_sampling_")
-class GenTrainShuffleSampler(GenTrainUniformSampler):
+class GenTrainShuffleSampler(freerec.data.postprocessing.sampler.GenTrainUniformSampler):
 
     def __iter__(self):
         for user, pos in self.source:
@@ -253,12 +255,6 @@ class GenTrainShuffleSampler(GenTrainUniformSampler):
                 else:
                     yield [user, pos, -1]
 
-def take_all(dataset):
-    data = []
-    for chunk in dataset.train():
-        data.extend(list(zip(chunk[USER, ID], chunk[ITEM, ID])))
-    return data
-
 
 def main():
 
@@ -266,35 +262,23 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        take_all(dataset)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_pairs()
     ).sharding_filter().gen_train_shuffle_uniform_sampling_(
         dataset, num_negatives=cfg.num_negs
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_valid_yielding_(
-        dataset # return (user, unseen, seen)
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_gen_validpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().gen_test_yielding_(
-        dataset
-    ).batch(1024).column_().tensor_().field_(
-        User.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_gen_testpipe(
+        dataset, batch_size=512, ranking=cfg.ranking
     )
 
     tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
         cfg.embedding_dim, ID
     )
-    User, Item = tokenizer[USER], tokenizer[ITEM]
     model = SimpleX(
         tokenizer, dataset.train().to_bigraph((USER, ID), (ITEM, ID))
     )
