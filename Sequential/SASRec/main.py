@@ -4,18 +4,12 @@ import torch
 import torch.nn as nn
 
 import freerec
-from freerec.data.postprocessing import RandomShuffledSource
-from freerec.parser import Parser
-from freerec.launcher import SeqCoach
-from freerec.models import RecSysArch
-from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID
-from freerec.data.dataloader import load_seq_lpad_validpipe, load_seq_lpad_testpipe
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--num-heads", type=int, default=1)
 cfg.add_argument("--num-blocks", type=int, default=2)
@@ -61,7 +55,7 @@ class PointWiseFeedForward(nn.Module):
         return outputs
 
 
-class SASRec(RecSysArch):
+class SASRec(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList,
@@ -170,7 +164,8 @@ class SASRec(RecSysArch):
 
         return features
 
-    def predict(self, 
+    def predict(
+        self, 
         seqs: torch.Tensor,
         positives: torch.Tensor,
         negatives: torch.Tensor
@@ -178,21 +173,20 @@ class SASRec(RecSysArch):
         features = self.forward(seqs)
         posEmbds = self.Item.look_up(positives) # (B, S, D)
         negEmbds = self.Item.look_up(negatives) # (B, S, D)
-
         return features.mul(posEmbds).sum(-1), features.mul(negEmbds).sum(-1)
 
     def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
-        features = self.forward(seqs)[:, [-1], :]  # (B, D, 1)
+        features = self.forward(seqs)[:, [-1], :]  # (B, 1, D)
         others = self.Item.look_up(pool) # (B, K, D)
         return features.mul(others).sum(-1)
 
     def recommend_from_full(self, seqs: torch.Tensor):
-        features = self.forward(seqs)[:, -1, :].unsqueeze(-1)  # (B, D, 1)
-        others = self.Item.embeddings.weight[NUM_PADS:] # (#Items, D)
-        return others.matmul(features).flatten(1) # (B, #Items)
+        features = self.forward(seqs)[:, -1, :]  # (B, D)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        return features.matmul(items.t()) # (B, N)
 
 
-class CoachForSASRec(SeqCoach):
+class CoachForSASRec(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
@@ -201,7 +195,8 @@ class CoachForSASRec(SeqCoach):
             posLabels = torch.ones_like(posLogits)
             negLabels = torch.zeros_like(negLogits)
             indices = positives != 0
-            loss = self.criterion(posLogits[indices], posLabels[indices]) + self.criterion(negLogits[indices], negLabels[indices])
+            loss = self.criterion(posLogits[indices], posLabels[indices]) \
+                + self.criterion(negLogits[indices], negLabels[indices])
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -216,7 +211,7 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
         source=dataset.train().to_seqs(keepid=True)
     ).sharding_filter().seq_train_uniform_sampling_(
         dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
@@ -228,17 +223,16 @@ def main():
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
 
-    validpipe = load_seq_lpad_validpipe(
+    validpipe = freerec.data.dataloader.load_seq_lpad_validpipe(
         dataset, cfg.maxlen, 
         NUM_PADS, padding_value=0,
         batch_size=100, ranking=cfg.ranking
     )
-    testpipe = load_seq_lpad_testpipe(
+    testpipe = freerec.data.dataloader.load_seq_lpad_testpipe(
         dataset, cfg.maxlen, 
         NUM_PADS, padding_value=0,
         batch_size=100, ranking=cfg.ranking
     )
-
 
     Item.embed(
         cfg.hidden_size, padding_idx = 0
@@ -261,7 +255,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = BCELoss4Logits()
+    criterion = freerec.criterions.BCELoss4Logits()
 
     coach = CoachForSASRec(
         trainpipe=trainpipe,
@@ -275,13 +269,16 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@1', 'hitrate@5', 'hitrate@10', 'ndcg@5', 'ndcg@10'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10'
+        ],
         which4best='ndcg@10'
     )
     coach.fit()
 
 
-
 if __name__ == "__main__":
     main()
-

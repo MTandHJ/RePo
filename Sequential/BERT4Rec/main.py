@@ -6,18 +6,12 @@ import torch.nn.functional as F
 import torchdata.datapipes as dp
 
 import freerec
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.data.postprocessing.sampler import SeqTrainYielder
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BaseCriterion
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID, POSITIVE, UNSEEN, SEEN
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=100)
 cfg.add_argument("--num-heads", type=int, default=4)
 cfg.add_argument("--num-blocks", type=int, default=2)
@@ -36,8 +30,6 @@ cfg.set_defaults(
     epochs=100,
     batch_size=256,
     optimizer='adamw',
-    beta1=0.9,
-    beta2=0.999,
     lr=1e-3,
     weight_decay=0.,
     seed=1,
@@ -48,7 +40,7 @@ cfg.compile()
 NUM_PADS = 2
 
 
-class BERT4Rec(RecSysArch):
+class BERT4Rec(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList,
@@ -105,7 +97,6 @@ class BERT4Rec(RecSysArch):
         return seqs + positions
 
     def forward(self, seqs: torch.Tensor):
-
         padding_mask = seqs == 0
         seqs = self.mark_position(self.Item.look_up(seqs)) # (B, S) -> (B, S, D)
         seqs = self.dropout(self.layernorm(seqs))
@@ -115,13 +106,20 @@ class BERT4Rec(RecSysArch):
         logits = self.fc(seqs) # (B, S, N + 2)
         return logits
 
-    def recommend(self, seqs: torch.Tensor, items: torch.Tensor):
+    def predict(self, seqs: torch.Tensor):
+        return self.forward(seqs)
+
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
         logits = self.forward(seqs)
         scores = logits[:, -1, :] # (B, N + 2)
-        return scores.gather(1, items) # (B, 101)
+        return scores.gather(1, pool) # (B, 101)
 
+    def recommend_from_full(self, seqs: torch.Tensor):
+        logits = self.forward(seqs)
+        scores = logits[:, -1, :] # (B, N + 2)
+        return scores[:, NUM_PADS:]
 
-class CoachForBERT4Rec(Coach):
+class CoachForBERT4Rec(freerec.launcher.SeqCoach):
 
     def random_mask(self, seqs: torch.Tensor, p: float = cfg.mask_prob):
         padding_mask = seqs == 0
@@ -145,35 +143,6 @@ class CoachForBERT4Rec(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
-            )
-
-
-@dp.functional_datapipe("bert_seq_train_yielding_")
-class SeqTrainYielder_(SeqTrainYielder):
-
-    def __iter__(self):
-        for user in self.source:
-            if self._check(user):
-                posItems = self.posItems[user]
-                yield [user, posItems]
-
-
-class CrossEntropy4logits(BaseCriterion):
-
-    def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        return F.cross_entropy(logits, labels, reduction=self.reduction, ignore_index=0)
-
 
 def main():
 
@@ -181,47 +150,75 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomIDs(
-        field=User, datasize=User.count
-    ).sharding_filter().bert_seq_train_yielding_(
-        dataset # yielding (user, seqs)
-    ).lprune_(
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_seqs(keepid=True)
+    ).sharding_filter().lprune_(
         indices=[1], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1], offset=NUM_PADS # 0: padding; 1: mask token
+        indices=[1], offset=NUM_PADS
     ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
+        indices=[1], maxlen=cfg.maxlen, padding_value=0 # 0: padding; 1: mask token
     ).batch(cfg.batch_size).column_().tensor_()
 
     # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen - 1,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
-    ).rpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
-    ).batch(cfg.batch_size).column_().tensor_()
+    if cfg.ranking == 'full':
+        validpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().seq_valid_yielding_(
+            dataset
+        ).lprune_(
+            indices=[1], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).lpad_(
+            indices=[1], maxlen=cfg.maxlen, padding_value=0
+        ).batch(128).column_().tensor_().field_(
+            User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        validpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().seq_valid_sampling_(
+            dataset # yielding (user, items, (target + (100) negatives))
+        ).lprune_(
+            indices=[1], maxlen=cfg.maxlen - 1,
+        ).rshift_(
+            indices=[1, 2], offset=NUM_PADS
+        ).lpad_(
+            indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
+        ).rpad_(
+            indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
+        ).batch(128).column_().tensor_()
 
     # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen - 1,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
-    ).rpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
-    ).batch(cfg.batch_size).column_().tensor_()
+    if cfg.ranking == 'full':
+        testpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().seq_test_yielding_(
+            dataset
+        ).lprune_(
+            indices=[1], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).lpad_(
+            indices=[1], maxlen=cfg.maxlen, padding_value=0
+        ).batch(100).column_().tensor_().field_(
+            User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        testpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().seq_test_sampling_(
+            dataset # yielding (user, items, (target + (100) negatives))
+        ).lprune_(
+            indices=[1], maxlen=cfg.maxlen - 1,
+        ).rshift_(
+            indices=[1, 2], offset=NUM_PADS
+        ).lpad_(
+            indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
+        ).rpad_(
+            indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
+        ).batch(cfg.batch_size).column_().tensor_()
 
     Item.embed(
         cfg.hidden_size, 
@@ -257,7 +254,7 @@ def main():
         step_size=cfg.decay_step,
         gamma=cfg.decay_factor
     )
-    criterion = CrossEntropy4logits()
+    criterion = freerec.criterions.CrossEntropy4Logits()
 
     coach = CoachForBERT4Rec(
         trainpipe=trainpipe,
@@ -284,4 +281,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

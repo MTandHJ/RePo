@@ -4,15 +4,15 @@
 
 [[official-code](https://github.com/JiachengLi1995/TiSASRec)] [[pmixer-TiSASRec.pytorch](https://github.com/pmixer/TiSASRec.pytorch)]
 
+
 ## Usage
 
+Run with full ranking:
 
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-Run with sampled-based ranking:
+or with sampled-based ranking
 
-    python main.py --config=configs/xxx.yaml
+    python main.py --config=configs/xxx.yaml --ranking=pool
 
-or with full-ranking
-
-    python main_full_ranking.py --config=configs/xxx.yaml
 

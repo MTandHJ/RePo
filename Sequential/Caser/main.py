@@ -6,17 +6,12 @@ import torch.nn.functional as F
 import torchdata.datapipes as dp
 
 import freerec
-from freerec.data.postprocessing import OrderedIDs, SeqTrainUniformSampler, RandomShuffledSource
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=5)
 cfg.add_argument("--hidden-size", type=int, default=64)
 cfg.add_argument("--dropout-rate", type=float, default=0.5)
@@ -43,7 +38,7 @@ cfg.compile()
 NUM_PADS = 1
 
 
-class Caser(RecSysArch):
+class Caser(freerec.models.RecSysArch):
 
     def __init__(self, fields: FieldModuleList) -> None:
         super().__init__()
@@ -87,7 +82,7 @@ class Caser(RecSysArch):
                 nn.init.normal_(m.weight, std=1. / cfg.hidden_size)
         self.b2.weight.data.zero_()
 
-    def _forward(self, 
+    def forward(self, 
         seqs: torch.Tensor,
         users: torch.Tensor,
         items: torch.Tensor,
@@ -113,25 +108,28 @@ class Caser(RecSysArch):
 
         return torch.baddbmm(itemBias, itemEmbs, features.unsqueeze(2)).squeeze(-1)
 
-    def forward(self, 
+    def predict(self, 
         seqs: torch.Tensor,
         users: torch.Tensor,
         positives: torch.Tensor,
         negatives: torch.Tensor
     ):
         items = torch.cat((positives, negatives), dim=1) 
-        return self._forward(seqs, users, items)
+        return self.forward(seqs, users, items)
 
-    def recommend(
-        self,
-        seqs: torch.Tensor,
-        users: torch.Tensor,
-        items: torch.Tensor
+    def recommend_from_pool(
+        self, users: torch.Tensor, seqs: torch.Tensor, pool: torch.Tensor
     ):
-        return self._forward(seqs, users, items)
+        return self.forward(seqs, users, pool)
+
+    def recommend_from_full(
+        self, users: torch.Tensor, seqs: torch.Tensor
+    ):
+        items = torch.tensor(range(NUM_PADS, self.Item.count + NUM_PADS), device=seqs.device).repeat((seqs.size(0), 1))
+        return self.forward(seqs, users, items)
 
 
-class CoachForCaser(Coach):
+class CoachForCaser(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
@@ -148,22 +146,9 @@ class CoachForCaser(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, users, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
-            )
-
 
 @dp.functional_datapipe("caser_sampling_")
-class SeqSampler(SeqTrainUniformSampler):
+class SeqSampler(freerec.data.postprocessing.sampler.SeqTrainUniformSampler):
 
     def __init__(
         self, source_dp, dataset, num_negatives: int = 1
@@ -231,7 +216,7 @@ def main():
     sequences = take_all_train_seqs(dataset)
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
         sequences
     ).sharding_filter().caser_sampling_(
         dataset, num_negatives=cfg.num_negs # yielding (user, seqs, targets, negatives)
@@ -243,31 +228,16 @@ def main():
         indices=[1], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    validpipe = freerec.data.dataloader.load_seq_lpad_validpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
+    testpipe = freerec.data.dataloader.load_seq_lpad_testpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
 
     Item.embed(
         cfg.hidden_size, padding_idx=0
@@ -291,7 +261,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = BCELoss4Logits()
+    criterion = freerec.criterions.BCELoss4Logits()
 
     coach = CoachForCaser(
         trainpipe=trainpipe,
@@ -311,7 +281,5 @@ def main():
     coach.fit()
 
 
-
 if __name__ == "__main__":
     main()
-

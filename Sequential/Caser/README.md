@@ -2,7 +2,6 @@
 
 # Caser
 
-
 [[official-code](https://github.com/graytowne/caser_pytorch)]
 
 
@@ -10,14 +9,14 @@
 As a result, Caser actually sees more interactions than other models such as SASRec.
 However, Caser uses a limited amount of historical information (e.g., `maxlen=5`) to predict the next item.
 
+
 ## Usage
 
+Run with full ranking:
 
-Run with sampled-based ranking:
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-    python main.py --config=configs/xxx.yaml
+or with sampled-based ranking
 
-or with full-ranking
-
-    python main_full_ranking.py --config=configs/xxx.yaml
+    python main.py --config=configs/xxx.yaml --ranking=pool
 

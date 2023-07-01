@@ -1,6 +1,5 @@
 
-
-# MF-BPR
+# GRU4Rec
 
 
 ## Usage

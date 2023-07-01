@@ -1,28 +1,17 @@
 
 
-from typing import Callable, Iterable
-
-import numpy as np
 import torch
 import torch.nn as nn
-import torchdata.datapipes as dp
 
 import freerec
-from freerec.data.datasets import RecDataSet
-from freerec.data.postprocessing.source import RandomIDs, OrderedIDs
-from freerec.data.postprocessing.sampler import SeqTrainUniformSampler, SeqValidSampler, SeqTestSampler
-from freerec.data.postprocessing.row import RowMapper
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import BCELoss4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID, TIMESTAMP
-from freerec.utils import timemeter
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID, POSITIVE, UNSEEN, SEEN
+
+from samplers import *
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--num-heads", type=int, default=1)
 cfg.add_argument("--num-blocks", type=int, default=2)
@@ -40,8 +29,6 @@ cfg.set_defaults(
     epochs=200,
     batch_size=128,
     optimizer='adam',
-    beta1=0.9,
-    beta2=0.98,
     lr=1e-3,
     weight_decay=0.,
     seed=1,
@@ -140,7 +127,7 @@ class TimeAwareMultiHeadAttention(torch.nn.Module):
         return outputs
 
 
-class TiSASRec(RecSysArch):
+class TiSASRec(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList,
@@ -256,7 +243,7 @@ class TiSASRec(RecSysArch):
 
         return seqs.masked_fill(padding_mask, 0.)
 
-    def _forward(self, seqs: torch.Tensor, times: torch.Tensor):
+    def forward(self, seqs: torch.Tensor, times: torch.Tensor):
 
         padding_mask = (seqs == 0).unsqueeze(-1) # (B, S, 1)
         seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
@@ -283,33 +270,37 @@ class TiSASRec(RecSysArch):
 
         return features
 
-    def forward(
+    def predict(
         self,
         seqs: torch.Tensor, times: torch.Tensor,
         positives: torch.Tensor, negatives: torch.Tensor
     ):
-        features = self._forward(seqs, times)
+        features = self.forward(seqs, times)
 
         posEmbds = self.Item.look_up(positives) # (B, S, D)
         negEmbds = self.Item.look_up(negatives) # (B, S, D)
 
         return features.mul(posEmbds).sum(-1), features.mul(negEmbds).sum(-1)
 
-    def recommend(
-        self, seqs: torch.Tensor, times: torch.Tensor, items: torch.Tensor
+    def recommend_from_pool(
+        self, seqs: torch.Tensor, times: torch.Tensor, pool: torch.Tensor
     ):
-        features = self._forward(seqs, times)[:, -1, :].unsqueeze(-1) # (B, D, 1)
-        others = self.Item.look_up(items) # (B, 101, D)
+        features = self.forward(seqs, times)[:, -1, :].unsqueeze(-1) # (B, D, 1)
+        others = self.Item.look_up(pool) # (B, 101, D)
+        return others.matmul(features).flatten(1) # (B, 101)
 
+    def recommend_from_full(self, seqs: torch.Tensor, times: torch.Tensor):
+        features = self.forward(seqs, times)[:, -1, :].unsqueeze(-1) # (B, D, 1)
+        others = self.Item.embeddings.weight[NUM_PADS:] # (#Items, D)
         return others.matmul(features).flatten(1) # (B, 101)
 
 
-class CoachForTiSASRec(Coach):
+class CoachForTiSASRec(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, times, positives, negatives = [col.to(self.device) for col in data]
-            posLogits, negLogits = self.model(seqs, times, positives, negatives)
+            posLogits, negLogits = self.model.predict(seqs, times, positives, negatives)
             posLabels = torch.ones_like(posLogits)
             negLabels = torch.zeros_like(negLogits)
             indices = positives != 0
@@ -323,199 +314,118 @@ class CoachForTiSASRec(Coach):
 
     def evaluate(self, epoch: int, prefix: str = 'valid'):
         for data in self.dataloader:
-            users, seqs, times, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, times, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
+            if len(data) == 4:
+                users, seqs, times, pool = [col.to(self.device) for col in data]
+                scores = self.model.recommend(seqs=seqs, times=times, pool=pool)
+                targets = torch.zeros_like(scores)
+                targets[:, 0].fill_(1)
+            elif len(data) == 5:
+                users, seqs, times, unseen, seen = data
+                users = users.to(self.device).data
+                times = times.to(self.device).data
+                seqs = seqs.to(self.device).data
+                scores = self.model.recommend(seqs=seqs, times=times)
+                seen = seen.to_csr().to(self.device).to_dense().bool()
+                scores[seen] = -1e23
+                targets = unseen.to_csr().to(self.device).to_dense()
+            else:
+                raise NotImplementedError(
+                    f"SeqCoach's `evaluate` expects the `data` to be the length of 3 or 4, but {len(data)} received ..."
+                )
 
             self.monitor(
                 scores, targets,
                 n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
+                pool=['HITRATE', 'PRECISION', 'RECALL', 'NDCG', 'MRR']
             )
 
-
-@dp.functional_datapipe("ti_seq_train_uniform_sampling_")
-class TiSASRecTrainSampler(SeqTrainUniformSampler):
-
-    @timemeter
-    def prepare(self, dataset: RecDataSet):
-        r"""
-        Prepare the data before sampling.
-
-        Parameters:
-        -----------
-        dataset: RecDataSet
-            The dataset object that contains field objects.
-        """
-        self.posItems = [[] for _ in range(self.User.count)]
-        self.posTimes = [[] for _ in range(self.User.count)]
-        self.negative_pool = self._sample_from_all(dataset.datasize)
-
-        for chunk in dataset.train():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-
-        self.posItems = [tuple(items) for items in self.posItems]
-
-    def __iter__(self):
-        for user in self.source:
-            if self._check(user):
-                posItems = self.posItems[user]
-                times = self.posTimes[user]
-                yield [user, posItems[:-1], times[:-1], posItems[1:], self._sample_neg(user)]
-
-
-@dp.functional_datapipe("ti_seq_valid_sampling_")
-class TiSASRecValidSampler(SeqValidSampler):
-
-    @timemeter
-    def prepare(self, dataset: RecDataSet):
-        r"""
-        Prepare the data before sampling.
-
-        Parameters:
-        -----------
-        dataset: RecDataSet
-            The dataset object that contains field objects.
-        """
-        self.posItems = [[] for _ in range(self.User.count)]
-        self.posTimes = [[] for _ in range(self.User.count)]
-        for chunk in dataset.train():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-
-        self.negItems = self.listmap(
-            self._sample_negs, self.posItems
-        )
-
-        for chunk in dataset.valid():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-        self.posItems = [tuple(items) for items in self.posItems]
-
-    def __iter__(self):
-        for user in self.source:
-            if self._check(user):
-                posItems = self.posItems[user]
-                times = self.posTimes[user]
-                yield [user, posItems[:-1], times[:-1], posItems[-1:] + self.negItems[user]]
-
-
-@dp.functional_datapipe("ti_seq_test_sampling_")
-class TiSASRecTestSampler(SeqTestSampler):
-
-    @timemeter
-    def prepare(self, dataset: RecDataSet):
-        r"""
-        Prepare the data before sampling.
-
-        Parameters:
-        -----------
-        dataset: RecDataSet
-            The dataset object that contains field objects.
-        """
-        self.posItems = [[] for _ in range(self.User.count)]
-        self.posTimes = [[] for _ in range(self.User.count)]
-        for chunk in dataset.train():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-        for chunk in dataset.valid():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-
-        self.negItems = self.listmap(
-            self._sample_negs, self.posItems
-        )
-
-        for chunk in dataset.test():
-            self.listmap(
-                lambda user, item, time: (self.posItems[user].append(item), self.posTimes[user].append(int(time))),
-                chunk[USER, ID], chunk[ITEM, ID], chunk[TIMESTAMP]
-            )
-        self.posItems = [tuple(items) for items in self.posItems]
-
-    def __iter__(self):
-        for user in self.source:
-            if self._check(user):
-                posItems = self.posItems[user]
-                times = self.posTimes[user]
-                yield [user, posItems[:-1], times[:-1], posItems[-1:] + self.negItems[user]]
-
-
-@dp.functional_datapipe("time2matrix_")
-class TimeMapper(RowMapper):
-
-    def __init__(self, source_dp: dp.iter.IterableWrapper, indices: Iterable[int]):
-        super().__init__(source_dp, self._time2matrix, indices)
-
-    def _time2matrix(self, times: Iterable) -> Iterable:
-        times = np.array(times, dtype=np.float32).reshape((-1, 1))
-        min_time = np.unique(times)
-        min_time = max(1, np.min(min_time[1:] - min_time[:-1]).item())
-        matrix = (np.abs(times - times.T) // min_time).astype(int)
-        return np.clip(matrix, 0, cfg.time_span).tolist()
 
 
 def main():
 
     dataset = getattr(freerec.data.datasets.sequential, cfg.dataset)(root=cfg.root)
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
+    Time = dataset.fields[TIMESTAMP]
 
     # trainpipe
-    trainpipe = RandomIDs(
-        field=User, datasize=User.count
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_seqs(keepid=True)
     ).sharding_filter().ti_seq_train_uniform_sampling_(
-        dataset # yielding (user, seqs, times, targets, negatives)
+        dataset, leave_one_out=False # yielding (user, seqs, times, targets, negatives)
     ).lprune_(
         indices=[1, 2, 3, 4], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1, 2, 3], offset=NUM_PADS
+        indices=[1, 3, 4], offset=NUM_PADS
     ).lpad_(
         indices=[1, 2, 3, 4], maxlen=cfg.maxlen, padding_value=0
     ).time2matrix_(
         indices=[2]
     ).batch(cfg.batch_size).column_().tensor_()
 
+
     # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().ti_seq_valid_sampling_(
-        dataset # yielding (user, seqs, times, (target + (100) negatives))
-    ).lprune_(
-        indices=[1, 2], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 3], offset=NUM_PADS
-    ).lpad_(
-        indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
-    ).time2matrix_(
-        indices=[2]
-    ).batch(cfg.batch_size).column_().tensor_()
+    if cfg.ranking == 'full':
+        validpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().ti_seq_valid_yielding_(
+            dataset # yielding (user, seqs, times, unseens, seens)
+        ).lprune_(
+            indices=[1, 2], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).lpad_(
+            indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
+        ).time2matrix_(
+            indices=[2]
+        ).batch(cfg.batch_size).column_().tensor_().field_(
+            User.buffer(), Item.buffer(tags=POSITIVE), Time.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        validpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().ti_seq_valid_sampling_(
+            dataset # yielding (user, seqs, times, (target + (100) negatives))
+        ).lprune_(
+            indices=[1, 2], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1, 3], offset=NUM_PADS
+        ).lpad_(
+            indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
+        ).time2matrix_(
+            indices=[2]
+        ).batch(cfg.batch_size).column_().tensor_()
 
     # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().ti_seq_test_sampling_(
-        dataset # yielding (user, seqs, times, (target + (100) negatives))
-    ).lprune_(
-        indices=[1, 2], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 3], offset=NUM_PADS
-    ).lpad_(
-        indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
-    ).time2matrix_(
-        indices=[2]
-    ).batch(cfg.batch_size).column_().tensor_()
+    if cfg.ranking == 'full':
+        testpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().ti_seq_test_yielding_(
+            dataset # yielding (user, seqs, times, unseens, seens)
+        ).lprune_(
+            indices=[1, 2], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).lpad_(
+            indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
+        ).time2matrix_(
+            indices=[2]
+        ).batch(cfg.batch_size).column_().tensor_().field_(
+            User.buffer(), Item.buffer(tags=POSITIVE), Time.buffer(), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        testpipe = freerec.data.postprocessing.source.OrderedIDs(
+            field=User
+        ).sharding_filter().ti_seq_test_sampling_(
+            dataset # yielding (user, seqs, times, (target + (100) negatives))
+        ).lprune_(
+            indices=[1, 2], maxlen=cfg.maxlen,
+        ).rshift_(
+            indices=[1, 3], offset=NUM_PADS
+        ).lpad_(
+            indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
+        ).time2matrix_(
+            indices=[2]
+        ).batch(cfg.batch_size).column_().tensor_()
 
     Item.embed(
         cfg.hidden_size, padding_idx = 0
@@ -538,7 +448,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = BCELoss4Logits()
+    criterion = freerec.criterions.BCELoss4Logits()
 
     coach = CoachForTiSASRec(
         trainpipe=trainpipe,
@@ -552,13 +462,16 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@1', 'hitrate@5', 'hitrate@10', 'ndcg@5', 'ndcg@10'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10'
+        ],
         which4best='ndcg@10'
     )
     coach.fit()
 
 
-
 if __name__ == "__main__":
     main()
-

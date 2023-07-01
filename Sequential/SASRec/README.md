@@ -5,14 +5,15 @@
 
 [[official-code](https://github.com/kang205/SASRec)]
 
+
 ## Usage
 
+Run with full ranking:
 
-Run with sampled-based ranking:
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-    python main.py --config=configs/xxx.yaml
+or with sampled-based ranking
 
-or with full-ranking
+    python main.py --config=configs/xxx.yaml --ranking=pool
 
-    python main_full_ranking.py --config=configs/xxx.yaml
 

@@ -1,7 +1,5 @@
 
 
-from typing import List
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,17 +9,12 @@ from torch_geometric.data import Data
 import torch_geometric.transforms as T
 
 import freerec
-from freerec.data.postprocessing import RandomShuffledSource, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=200)
 cfg.add_argument("--embedding-dim", type=int, default=64)
 cfg.add_argument("--hidden-size", type=int, default=64)
@@ -96,7 +89,7 @@ class GNN(nn.Module):
         return hidden
 
 
-class SRGNN(RecSysArch):
+class SRGNN(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList,
@@ -164,7 +157,7 @@ class SRGNN(RecSysArch):
 
         return torch.cat([A_in, A_out], dim=-1), nodes, alias_indices
 
-    def _forward(self, seqs: torch.Tensor):
+    def forward(self, seqs: torch.Tensor):
         masks = seqs.not_equal(0)
         A, unique_seqs, alias_indices  = self.getA(seqs, masks)
         unique_seqs = self.Item.look_up(unique_seqs) # (B, S', D)
@@ -185,58 +178,41 @@ class SRGNN(RecSysArch):
         a = self.linear_transform(torch.cat([a, last], 1))
         return a
 
-    def forward(self, seqs: torch.Tensor):
-        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
-        features = self._forward(seqs)
-        return features.matmul(items.t())
+    def predict(
+        self, 
+        seqs: torch.Tensor, 
+        positives: torch.Tensor, 
+        negatives:torch.Tensor
+    ):
+        features = self.forward(seqs)
+        posEmbds = self.Item.look_up(positives).squeeze(1) # (B, D)
+        negEmbds = self.Item.look_up(negatives).squeeze(1) # (B, D)
+        return features.mul(posEmbds).sum(-1), features.mul(negEmbds).sum(-1)
 
-    def recommend(self, seqs: torch.Tensor, items: torch.Tensor):
-        items = self.Item.look_up(items) # (B, 101, D)
-        features =  self._forward(seqs).unsqueeze(1) # (B, 1, D)
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
+        features = self.forward(seqs).unsqueeze(1) # (B, 1, D)
+        items = self.Item.look_up(pool) # (B, K, D)
         return features.mul(items).sum(-1)
 
+    def recommend_from_full(self, seqs: torch.Tensor):
+        features = self.forward(seqs)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        return features.matmul(items.t())
 
-class CoachForSRGNN(Coach):
+
+class CoachForSRGNN(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
-            users, seqs, targets = [col.to(self.device) for col in data]
-            scores = self.model(seqs)
-            loss = self.criterion(scores, targets.flatten())
+            users, seqs, positives, negatives = [col.to(self.device) for col in data]
+            pos, neg = self.model.predict(seqs, positives, negatives)
+            loss = self.criterion(pos, neg)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
-        self.lr_scheduler.step()
-
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
-            )
-
-
-def to_roll_seqs(dataset, minlen=2):
-    seqs = dataset.train().to_seqs(keepid=True)
-
-    roll_seqs = []
-    for id_, items in seqs:
-        items = items[-cfg.maxlen:]
-        for k in range(minlen, len(items) + 1):
-            roll_seqs.append(
-                (id_, items[:k])
-            )
-
-    return roll_seqs
 
 
 def main():
@@ -245,41 +221,28 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        to_roll_seqs(dataset)
-    ).sharding_filter().sess_train_yielding_(
-        None # yielding (sesses, seqs, targets)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_roll_seqs(minlen=2)
+    ).sharding_filter().seq_train_uniform_sampling_(
+        dataset, leave_one_out=True # yielding (users, seqs, positives, negatives)
+    ).lprune_(
+        indices=[1], maxlen=cfg.maxlen,
     ).rshift_(
-        indices=[1], offset=NUM_PADS
+        indices=[1, 2, 3], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().rpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).rpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).rpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    validpipe = freerec.data.dataloader.load_seq_rpad_validpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
+    testpipe = freerec.data.dataloader.load_seq_rpad_testpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
 
     Item.embed(
         cfg.embedding_dim, padding_idx = 0
@@ -308,7 +271,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = CrossEntropy4Logits()
+    criterion = freerec.criterions.BPRLoss()
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=cfg.lr_dc_step, gamma=cfg.lr_dc)
 
     coach = CoachForSRGNN(
@@ -324,7 +287,11 @@ def main():
     )
     coach.compile(
         cfg, 
-        monitors=['loss', 'hitrate@1', 'hitrate@5', 'hitrate@10', 'ndcg@5', 'ndcg@10'],
+        monitors=[
+            'loss', 
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10'
+        ],
         which4best='ndcg@10'
     )
     coach.fit()
@@ -332,4 +299,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
