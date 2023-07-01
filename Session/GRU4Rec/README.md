@@ -1,8 +1,6 @@
 
 
-# LESSR
-
-[[official-code](https://github.com/twchen/lessr)]
+# GRU4Rec
 
 
 ## Usage

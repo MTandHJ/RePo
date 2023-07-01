@@ -7,7 +7,10 @@
 
 ## Usage
 
+Run with full ranking
 
-Run with full-ranking
+    python main.py --config=configs/xxx.yaml --ranking=full
 
-    python main.py --config=configs/xxx.yaml
+or with sampled-based ranking
+
+    python main.py --config=configs/xxx.yaml --ranking=pool

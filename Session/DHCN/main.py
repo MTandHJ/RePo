@@ -9,17 +9,14 @@ from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
 
 import freerec
-from freerec.data.postprocessing import RandomShuffledSource, OrderedSource
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID, POSITIVE, UNSEEN, SEEN
+
 from utils import get_session_item_graph, get_session_graph
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--embedding-dim", type=int, default=100)
 cfg.add_argument('--num_layers', type=float, default=3, help='the number of layer used')
 cfg.add_argument('--beta', type=float, default=0.005, help='ssl task maginitude')
@@ -87,7 +84,7 @@ class LinConv(nn.Module):
         return avgFeats
 
 
-class DHCN(RecSysArch):
+class DHCN(freerec.models.RecSysArch):
 
     def __init__(
         self, 
@@ -180,7 +177,7 @@ class DHCN(RecSysArch):
             (1 - negScores.sigmoid()).add(1e-8).log().neg()
         )
 
-    def forward(self, seqs: torch.Tensor, targets: torch.Tensor):
+    def predict(self, seqs: torch.Tensor, targets: torch.Tensor):
         r"""
         Parameters:
         -----------
@@ -220,7 +217,23 @@ class DHCN(RecSysArch):
         loss_item = self.criterion(scores + 1e-8, targets)
         return loss_item + loss_ssl * cfg.beta
 
-    def recommend(self, seqs: torch.Tensor):
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
+        masks = seqs.not_equal(0)
+        seqLens = masks.sum(-1, keepdim=True)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        itemEmbsH = self.HyperGraph(items)
+        sessEmbsH = self.calc_sess_emb(
+            torch.cat([
+                torch.zeros(NUM_PADS, itemEmbsH.size(-1), device=self.device),
+                itemEmbsH
+            ], dim=0),
+            seqs, seqLens, masks
+        )
+        sessEmbsH = sessEmbsH.unsqueeze(1) # (B, 1, D)
+        items = itemEmbsH[pool - NUM_PADS] # (B, K, D)
+        return sessEmbsH.mul(items).sum(-1)
+
+    def recommend_from_full(self, seqs: torch.Tensor):
         masks = seqs.not_equal(0)
         seqLens = masks.sum(-1, keepdim=True)
         items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
@@ -236,32 +249,18 @@ class DHCN(RecSysArch):
         return scores
 
 
-class CoachForDHCN(Coach):
+class CoachForDHCN(freerec.launcher.SessCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             sesses, seqs, targets = [col.to(self.device) for col in data]
-            loss = self.model(seqs, targets)
+            loss = self.model.predict(seqs, targets)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
             self.monitor(loss.item(), n=sesses.size(0), mode="mean", prefix='train', pool=['LOSS'])
-
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for sesses, seqs, unseen, seen in self.dataloader:
-            sesses = sesses.data
-            seqs = seqs.to(self.device).data
-            scores = self.model.recommend(seqs)
-            # Don't remove seens for session
-            targets = unseen.to_csr().to(self.device).to_dense()
-
-            self.monitor(
-                scores, targets,
-                n=len(sesses), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'PRECISION', 'MRR']
-            )
 
 
 def main():
@@ -270,43 +269,64 @@ def main():
     Session, Item = dataset.fields[SESSION, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        dataset.train().to_roll_seqs(minlen=2)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_train_yielding_(
-        None # yielding (sesses, seqs, targets)
+        dataset, leave_one_out=True # yielding (sess, seqs, target)
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).batch(cfg.batch_size).column_().lpad_col_(
+    ).batch(cfg.batch_size).column_().rpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
 
     # validpipe
     # Shuffling for the following reason:
     # https://github.com/xiaxin1998/DHCN/issues/2
-    validpipe = RandomShuffledSource(
-        dataset.valid().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_valid_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(100).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
-    )
+    if cfg.ranking == 'full':
+        validpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+            dataset.valid().to_roll_seqs(minlen=2)
+        ).sharding_filter().sess_valid_yielding_(
+            dataset # yielding (sess, seqs, target, seen)
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).batch(256).column_().lpad_col_(
+            indices=[1], maxlen=None, padding_value=0
+        ).tensor_().field_(
+            Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        validpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+            dataset.valid().to_roll_seqs(minlen=2)
+        ).sharding_filter().sess_valid_sampling_(
+            dataset # yielding (sess, seqs, pool)
+        ).rshift_(
+            indices=[1, 2], offset=NUM_PADS
+        ).batch(256).column_().lpad_col_(
+            indices=[1], maxlen=None, padding_value=0
+        ).tensor_()
 
-    # testpipe
-    testpipe = RandomShuffledSource(
-        dataset.test().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_test_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(100).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
-    )
+    if cfg.ranking == 'full':
+        testpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+            dataset.test().to_roll_seqs(minlen=2)
+        ).sharding_filter().sess_valid_yielding_(
+            dataset # yielding (sess, seqs, target, seen)
+        ).rshift_(
+            indices=[1], offset=NUM_PADS
+        ).batch(256).column_().lpad_col_(
+            indices=[1], maxlen=None, padding_value=0
+        ).tensor_().field_(
+            Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+        )
+    elif cfg.ranking == 'pool':
+        testpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+            dataset.test().to_roll_seqs(minlen=2)
+        ).sharding_filter().sess_valid_sampling_(
+            dataset # yielding (sess, seqs, pool)
+        ).rshift_(
+            indices=[1, 2], offset=NUM_PADS
+        ).batch(256).column_().lpad_col_(
+            indices=[1], maxlen=None, padding_value=0
+        ).tensor_()
 
     Item.embed(
         cfg.embedding_dim, padding_idx=0
@@ -315,9 +335,11 @@ def main():
     model = DHCN(
         get_session_item_graph(dataset),
         tokenizer,
-        maxlen=max(list(
-            map(lambda seq: len(seq), dataset.to_seqs(keepid=False))
-        ))
+        maxlen=max(
+            dataset.train().maxlen,
+            dataset.valid().maxlen,
+            dataset.test().maxlen
+        )
     )
 
     if cfg.optimizer == 'sgd':
@@ -352,7 +374,13 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@10', 'hitrate@20', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@10', 'hitrate@20', 
+            'precision@10', 'precision@20', 
+            'mrr@10', 'mrr@20'
+        ],
         which4best='mrr@20'
     )
     coach.fit()

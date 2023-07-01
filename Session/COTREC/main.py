@@ -13,18 +13,14 @@ from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
 
 import freerec
-from freerec.data.postprocessing import RandomShuffledSource, OrderedSource
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
+
 from utils import get_item_graph, get_session_graph
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--embedding-dim", type=int, default=100)
 cfg.add_argument('--num_layers', type=float, default=2, help='the number of layer used')
 cfg.add_argument('--beta', type=float, default=0.005, help='ssl task maginitude')
@@ -37,7 +33,7 @@ cfg.add_argument('--scale4sessEmbsI', type=float, default=10., help='scale facto
 cfg.set_defaults(
     description="COTREC",
     root="../../data",
-    dataset='Diginetica_250811_Chron',
+    dataset='Diginetica_2507_Chron',
     epochs=30,
     batch_size=100,
     optimizer='adam',
@@ -137,7 +133,7 @@ class SessConv(nn.Module):
         return avgFeats
 
 
-class COTREC(RecSysArch):
+class COTREC(freerec.models.RecSysArch):
 
     def __init__(
         self, 
@@ -278,7 +274,7 @@ class COTREC(RecSysArch):
 
         return h1 + h2
 
-    def forward(self, seqs: torch.Tensor, targets: torch.Tensor):
+    def predict(self, seqs: torch.Tensor, targets: torch.Tensor):
         r"""
         Parameters:
         -----------
@@ -350,7 +346,23 @@ class COTREC(RecSysArch):
 
         return loss_item + loss_ssl * cfg.beta + loss_diff * cfg.lam
 
-    def recommend(self, seqs: torch.Tensor):
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
+        masks = seqs.not_equal(0)
+        seqLens = masks.sum(-1, keepdim=True)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        itemEmbsI = self.ItemGraph(items)
+        sessEmbsI = self.calc_sess_emb(
+            torch.cat([
+                torch.zeros(NUM_PADS, itemEmbsI.size(-1), device=self.device),
+                itemEmbsI
+            ], dim=0),
+            seqs, seqLens, masks
+        )
+        sessEmbsI = F.normalize(sessEmbsI, dim=-1, p=2).unsqueeze(1) # (B, 1, D)
+        itemEmbsI = F.normalize(itemEmbsI, dim=-1, p=2)[pool - NUM_PADS] # (B, K, D)
+        return sessEmbsI.mul(itemEmbsI).sum(-1)
+
+    def recommend_from_full(self, seqs: torch.Tensor):
         masks = seqs.not_equal(0)
         seqLens = masks.sum(-1, keepdim=True)
         items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
@@ -368,32 +380,18 @@ class COTREC(RecSysArch):
         return scores
 
 
-class CoachForCOTREC(Coach):
+class CoachForCOTREC(freerec.launcher.SessCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             sesses, seqs, targets = [col.to(self.device) for col in data]
-            loss = self.model(seqs, targets)
+            loss = self.model.predict(seqs, targets)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
             self.monitor(loss.item(), n=sesses.size(0), mode="mean", prefix='train', pool=['LOSS'])
-
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for sesses, seqs, unseen, seen in self.dataloader:
-            sesses = sesses.data
-            seqs = seqs.to(self.device).data
-            scores = self.model.recommend(seqs)
-            # Don't remove seens for session
-            targets = unseen.to_csr().to(self.device).to_dense()
-
-            self.monitor(
-                scores, targets,
-                n=len(sesses), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'PRECISION', 'MRR']
-            )
 
 
 def main():
@@ -402,40 +400,25 @@ def main():
     Session, Item = dataset.fields[SESSION, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        dataset.train().to_roll_seqs(minlen=2)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_train_yielding_(
-        None # yielding (sesses, seqs, targets)
+        dataset, leave_one_out=True # yielding (sess, seqs, target)
     ).rshift_(
         indices=[1], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
 
-    # validpipe
-    validpipe = RandomShuffledSource(
-        dataset.valid().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_valid_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_sess_lpad_validpipe(
+        dataset, 
+        NUM_PADS=NUM_PADS, padding_value=0, 
+        batch_size=256, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = RandomShuffledSource(
-        dataset.test().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_test_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_sess_lpad_testpipe(
+        dataset, 
+        NUM_PADS=NUM_PADS, padding_value=0, 
+        batch_size=256, ranking=cfg.ranking
     )
 
     Item.embed(
@@ -443,21 +426,14 @@ def main():
     )
     tokenizer = FieldModuleList(dataset.fields)
 
-    # maxlen
-    trainlen = max(list(
-        map(lambda seq: len(seq), dataset.train().to_seqs(keepid=False))
-    ))
-    validlen = max(list(
-        map(lambda seq: len(seq), dataset.valid().to_seqs(keepid=False))
-    ))
-    testlen = max(list(
-        map(lambda seq: len(seq), dataset.test().to_seqs(keepid=False))
-    ))
-
     model = COTREC(
         get_item_graph(dataset),
         tokenizer,
-        maxlen=max(trainlen, validlen, testlen)
+        maxlen=max(
+            dataset.train().maxlen,
+            dataset.valid().maxlen,
+            dataset.test().maxlen
+        )
     )
 
     if cfg.optimizer == 'sgd':
@@ -480,7 +456,7 @@ def main():
             weight_decay=cfg.weight_decay
         )
 
-    criterion = CrossEntropy4Logits()
+    criterion = freerec.criterions.CrossEntropy4Logits()
 
     coach = CoachForCOTREC(
         trainpipe=trainpipe,
@@ -494,7 +470,13 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@10', 'hitrate@20', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@10', 'hitrate@20', 
+            'precision@10', 'precision@20', 
+            'mrr@10', 'mrr@20'
+        ],
         which4best='mrr@20'
     )
     coach.fit()
@@ -502,4 +484,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

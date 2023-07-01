@@ -1,9 +1,0 @@
-dataset: Diginetica_250811_Chron
-root: ../../data
-epochs: 30
-batch_size: 512
-lr: 1.e-4
-optimizer: adam
-weight_decay: 1.e-6
-hidden_size: 100
-dropout_rate: 0.4

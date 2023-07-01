@@ -4,17 +4,12 @@ import torch
 import torch.nn as nn
 
 import freerec
-from freerec.data.postprocessing import RandomShuffledSource, OrderedSource
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.criterions import CrossEntropy4Logits
 from freerec.data.fields import FieldModuleList
-from freerec.data.tags import SESSION, ITEM, ID, POSITIVE, UNSEEN, SEEN
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--num-heads", type=int, default=1)
 cfg.add_argument("--num-blocks", type=int, default=2)
 cfg.add_argument("--hidden-size", type=int, default=100)
@@ -23,7 +18,7 @@ cfg.add_argument("--dropout-rate", type=float, default=0.2)
 cfg.set_defaults(
     description="SASRec",
     root="../../data",
-    dataset='Diginetica_250811_Chron',
+    dataset='Diginetica_2507_Chron',
     epochs=30,
     batch_size=512,
     optimizer='adam',
@@ -60,7 +55,7 @@ class PointWiseFeedForward(nn.Module):
         return outputs
 
 
-class SASRec(RecSysArch):
+class SASRec(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList,
@@ -153,7 +148,7 @@ class SASRec(RecSysArch):
 
         return seqs.masked_fill(padding_mask, 0.)
 
-    def _forward(self, seqs: torch.Tensor, items: torch.Tensor):
+    def forward(self, seqs: torch.Tensor):
         padding_mask = (seqs == 0).unsqueeze(-1)
         seqs = self.Item.look_up(seqs) # (B, S) -> (B, S, D)
         seqs *= self.Item.dimension ** 0.5
@@ -165,22 +160,29 @@ class SASRec(RecSysArch):
         
         features = self.lastLN(seqs)[:, -1, :] # (B, D)
 
+        return features
+
+    def predict(self, seqs: torch.Tensor):
+        features = self.forward(seqs)
+        items = self.Item.embeddings.weight[NUM_PADS:]
         return features.matmul(items.t())
 
-    def forward(self, seqs: torch.Tensor):
-        items = self.Item.embeddings.weight[NUM_PADS:]
-        return self._forward(seqs, items)
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
+        features = self.forward(seqs).unsqueeze(1) # (B, 1, D)
+        items = self.Item.look_up(pool) # (B, K, D)
+        return features.mul(items).sum(-1)
 
-    def recommend(self, seqs: torch.Tensor):
+    def recommend_from_full(self, seqs: torch.Tensor):
+        features = self.forward(seqs)
         items = self.Item.embeddings.weight[NUM_PADS:]
-        return self._forward(seqs, items)
+        return features.matmul(items.t())
 
-class CoachForSASRec(Coach):
+class CoachForSASRec(freerec.launcher.SessCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             sesses, seqs, targets = [col.to(self.device) for col in data]
-            scores = self.model(seqs)
+            scores = self.model.predict(seqs)
             loss = self.criterion(scores, targets.flatten())
 
             self.optimizer.zero_grad()
@@ -189,20 +191,6 @@ class CoachForSASRec(Coach):
             
             self.monitor(loss.item(), n=sesses.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for sesses, seqs, unseen, seen in self.dataloader:
-            sesses = sesses.data
-            seqs = seqs.to(self.device).data
-            scores = self.model.recommend(seqs)
-            # Don't remove seens for session
-            targets = unseen.to_csr().to(self.device).to_dense()
-
-            self.monitor(
-                scores, targets,
-                n=len(sesses), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'PRECISION', 'MRR']
-            )
-
 
 def main():
 
@@ -210,40 +198,25 @@ def main():
     Session, Item = dataset.fields[SESSION, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = RandomShuffledSource(
-        dataset.train().to_roll_seqs(minlen=2)
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_train_yielding_(
-        None # yielding (sesses, seqs, targets)
+        dataset, leave_one_out=True # yielding (sess, seqs, target)
     ).rshift_(
         indices=[1], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
 
-    # validpipe
-    validpipe = OrderedSource(
-        dataset.valid().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_valid_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    validpipe = freerec.data.dataloader.load_sess_lpad_validpipe(
+        dataset, 
+        NUM_PADS=NUM_PADS, padding_value=0, 
+        batch_size=256, ranking=cfg.ranking
     )
-
-    # testpipe
-    testpipe = OrderedSource(
-        dataset.test().to_roll_seqs(minlen=2)
-    ).sharding_filter().sess_test_yielding_(
-        dataset # yielding (sesses, seqs, targets, seen)
-    ).rshift_(
-        indices=[1], offset=NUM_PADS
-    ).batch(512).column_().lpad_col_(
-        indices=[1], maxlen=None, padding_value=0
-    ).tensor_().field_(
-        Session.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
+    testpipe = freerec.data.dataloader.load_sess_lpad_testpipe(
+        dataset, 
+        NUM_PADS=NUM_PADS, padding_value=0, 
+        batch_size=256, ranking=cfg.ranking
     )
 
     Item.embed(
@@ -251,20 +224,13 @@ def main():
     )
     tokenizer = FieldModuleList(dataset.fields)
 
-    # maxlen
-    trainlen = max(list(
-        map(lambda seq: len(seq), dataset.train().to_seqs(keepid=False))
-    ))
-    validlen = max(list(
-        map(lambda seq: len(seq), dataset.valid().to_seqs(keepid=False))
-    ))
-    testlen = max(list(
-        map(lambda seq: len(seq), dataset.test().to_seqs(keepid=False))
-    ))
-
     model = SASRec(
         tokenizer,
-        maxlen=max(trainlen, validlen, testlen)
+        maxlen=max(
+            dataset.train().maxlen,
+            dataset.valid().maxlen,
+            dataset.test().maxlen,
+        )
     )
 
     if cfg.optimizer == 'sgd':
@@ -286,7 +252,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = CrossEntropy4Logits()
+    criterion = freerec.criterions.CrossEntropy4Logits()
 
     coach = CoachForSASRec(
         trainpipe=trainpipe,
@@ -300,7 +266,13 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@10', 'hitrate@20', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@10', 'hitrate@20', 
+            'precision@10', 'precision@20', 
+            'mrr@10', 'mrr@20'
+        ],
         which4best='mrr@20'
     )
     coach.fit()
@@ -308,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

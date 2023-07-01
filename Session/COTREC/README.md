@@ -1,8 +1,8 @@
 
 
-# LESSR
+# COTREC
 
-[[official-code](https://github.com/twchen/lessr)]
+[[official-code](https://github.com/xiaxin1998/COTREC)]
 
 
 ## Usage

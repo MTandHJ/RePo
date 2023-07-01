@@ -117,7 +117,7 @@ def main():
     trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
         dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().sess_train_yielding_(
-        dataset # yielding (sesses, seqs, targets)
+        dataset, leave_one_out=True # yielding (sesses, seqs, targets)
     ).rshift_(
         indices=[1], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().rpad_col_(
@@ -178,7 +178,13 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@10', 'hitrate@20', 'precision@10', 'precision@20', 'mrr@10', 'mrr@20'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@10', 'hitrate@20', 
+            'precision@10', 'precision@20', 
+            'mrr@10', 'mrr@20'
+        ],
         which4best='mrr@20'
     )
     coach.fit()
@@ -186,4 +192,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
