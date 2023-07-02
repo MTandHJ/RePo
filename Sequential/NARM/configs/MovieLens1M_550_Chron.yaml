@@ -3,10 +3,10 @@ root: ../../data
 epochs: 100
 batch_size: 512
 lr: 1.e-3
-weight_decay: 1.e-8
+weight_decay: 0.
 maxlen: 200
 embedding_dim: 64
 hidden_size: 64
-emb_dropout_rate: 0.4
+emb_dropout_rate: 0.2
 ct_dropout_rate: 0.
 num_gru_layers: 1
