@@ -1,6 +1,8 @@
 
 # GRU4Rec
 
+[[official-code](https://github.com/hidasib/GRU4Rec)]
+
 
 ## Usage
 
