@@ -23,7 +23,6 @@ cfg.set_defaults(
     optimizer='adam',
     lr=1e-3,
     weight_decay=0.,
-    eval_freq=1,
     seed=1,
 )
 cfg.compile()
