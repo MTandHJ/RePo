@@ -134,7 +134,7 @@ class CoachForCaser(freerec.launcher.SeqCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            scores = self.model(seqs, users, positives, negatives)
+            scores = self.model.predict(seqs, users, positives, negatives)
             posLogits, negLogits = torch.split(scores, [self.cfg.num_poss, self.cfg.num_negs], dim=1)
             posLabels = torch.ones_like(posLogits)
             negLabels = torch.zeros_like(negLogits)
