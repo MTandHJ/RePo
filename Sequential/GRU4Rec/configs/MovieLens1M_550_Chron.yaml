@@ -1,7 +1,7 @@
 dataset: MovieLens1M_550_Chron
 root: ../../data
 maxlen: 200
-epochs: 30
+epochs: 100
 batch_size: 512
 lr: 1.e-3
 weight_decay: 0.

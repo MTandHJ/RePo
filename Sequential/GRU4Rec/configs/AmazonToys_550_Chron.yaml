@@ -1,7 +1,7 @@
 dataset: AmazonToys_550_Chron
 root: ../../data
 maxlen: 50
-epochs: 30
+epochs: 100
 batch_size: 512
 lr: 5.e-3
 weight_decay: 0.
