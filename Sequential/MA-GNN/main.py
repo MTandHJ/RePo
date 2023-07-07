@@ -10,6 +10,7 @@ import torchdata.datapipes as dp
 import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
+from freerec.utils import timemeter
 
 from modules import GNN, get_sinusoid_encoding_table
 
@@ -24,7 +25,6 @@ cfg.add_argument('--T', type=int, default=2, help="num of targest")
 cfg.add_argument('--K', type=int, default=3, help="K nearst neighbors")
 
 # train arguments
-cfg.add_argument('--sets_of_neg_samples', type=int, default=50)
 cfg.add_argument('--layers', type=int, default=2, help='gnn propogation steps')
 cfg.add_argument('--hidden-size', type=int, default=20, help='number of dimensions in attention')
 cfg.add_argument('--memory-size', type=int, default=20, help='number of memory units')
@@ -38,7 +38,6 @@ cfg.set_defaults(
     optimizer='adam',
     lr=1e-3,
     weight_decay=1.e-3,
-    num_workers=0, # XXX
     seed=1,
 )
 cfg.compile()
@@ -68,7 +67,10 @@ class MAGNN(freerec.models.RecSysArch):
         self.T = T
 
         self.gnn = GNN(embedding_dim, L, T, layers, K)
-        self.position_code_embedding = get_sinusoid_encoding_table(maxlen - L, embedding_dim)
+        self.register_buffer(
+            'position_code_embedding',
+            get_sinusoid_encoding_table(maxlen - L, embedding_dim)
+        )
 
         self.register_buffer(
             "ones_production",
@@ -135,20 +137,21 @@ class MAGNN(freerec.models.RecSysArch):
         left_seqs, seqs = seqs[:, :-self.L], seqs[:, -self.L:]
 
         item_embs = self.Item.look_up(seqs) # (B, L, D)
-        left_item_embs = self.Item.look_up(left_seqs)
+        left_item_embs = self.Item.look_up(left_seqs) # (B, maxlen - L, D)
         user_embs = self.User.look_up(users.squeeze(1)) # (B, D)
 
         # short
         short_embs = self.gnn(item_embs) # (B, L, D)
         short_arg_embs = short_embs.mean(1) # (B, D)
 
+        # long
         long_hidden = left_item_embs + self.position_code_embedding # (B, maxlen - L, D)
         long_user_hidden = user_embs.matmul(self.long_W2).unsqueeze(2) * self.ones_production # (B, D, maxlen - L)
 
-        long_hidden_head = (long_hidden.matmul(self.long_W1) + long_user_hidden.transpose(1, 2)).tanh()
-        long_hidden_head = long_hidden_head.matmul(self.long_W3).softmax(dim=2) # (B, maxlen - L, maxlen - L)
+        long_hidden_head = (long_hidden.matmul(self.long_W1) + long_user_hidden.transpose(1, 2)).tanh() # (B, maxlen - L, D)
+        long_hidden_head = long_hidden_head.matmul(self.long_W3).softmax(dim=2) # (B, maxlen - L, hidden_size)
 
-        matrix_z = torch.bmm(long_hidden.permute(0, 2, 1), long_hidden_head) # (B, D, maxlen - L)
+        matrix_z = torch.bmm(long_hidden.permute(0, 2, 1), long_hidden_head) # (B, D, hidden_size)
         long_query = matrix_z.tanh().mean(dim=2) # (B, D)
 
         # memory units
@@ -231,7 +234,7 @@ class CoachForMAGNN(freerec.launcher.SeqCoach):
             loss.backward()
             self.optimizer.step()
             
-            self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
+            self.monitor(loss.item(), n=users.size(0), mode="sum", prefix='train', pool=['LOSS'])
 
 
 def to_roll_seqs(dataset):
@@ -263,6 +266,18 @@ class MASeqTrainUniformSampler(freerec.data.postprocessing.sampler.SeqTrainUnifo
         super().__init__(source_dp, dataset, True)
 
         self.marker = cfg.T
+
+    @timemeter
+    def prepare(self, dataset: freerec.data.datasets.RecDataSet):
+        self.posItems = [[] for _ in range(self.User.count)]
+        self.negative_pool = self._sample_from_all(dataset.train().datasize)
+        for chunk in dataset.train():
+            self.listmap(
+                lambda user, item: self.posItems[user].append(item),
+                chunk[USER, ID], chunk[ITEM, ID]
+            )
+        self.posItems = [tuple(sorted(items)) for items in self.posItems]
+
 
     def _sample_neg(self, user: int, positives: Tuple) -> List[int]:
         r""" 
