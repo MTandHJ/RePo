@@ -1,0 +1,9 @@
+dataset: AmazonTools_550_Chron
+root: ../../data
+epochs: 100
+batch_size: 512
+lr: 5.e-4
+weight_decay: 1.e-8
+maxlen: 50
+embedding_dim: 64
+hidden_size: 64
