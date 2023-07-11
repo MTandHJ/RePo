@@ -91,11 +91,6 @@ class NARM(freerec.models.RecSysArch):
         features = self.b(c_t) # (B, D)
         return features
 
-    def predict(self, seqs: torch.Tensor):
-        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
-        features = self._forward(seqs)
-        return features.matmul(items.t())
-
     def predict(
         self, 
         seqs: torch.Tensor, 
