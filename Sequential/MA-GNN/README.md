@@ -1,6 +1,6 @@
 
 
-# SASRec
+# MA-GNN
 
 [[official-code](https://github.com/Forrest-Stone/MA-GNN)]
 
