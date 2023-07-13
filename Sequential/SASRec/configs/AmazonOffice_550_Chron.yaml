@@ -6,7 +6,7 @@ num_blocks: 2
 hidden_size: 64
 dropout_rate: 0.4
 epochs: 200
-batch_size: 512
+batch_size: 256
 optimizer: adam
 beta1: 0.9
 beta2: 0.98
