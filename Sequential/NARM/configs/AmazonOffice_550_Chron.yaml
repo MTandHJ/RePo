@@ -1,0 +1,12 @@
+dataset: AmazonOffice_550_Chron
+root: ../../data
+epochs: 100
+batch_size: 512
+lr: 5.e-3
+weight_decay: 1.e-6
+maxlen: 50
+embedding_dim: 64
+hidden_size: 64
+emb_dropout_rate: 0.
+ct_dropout_rate: 0.6
+num_gru_layers: 1
