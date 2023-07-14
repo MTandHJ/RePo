@@ -7,24 +7,18 @@ import numpy as np
 import scipy.sparse as sp
 
 import freerec
-from freerec.data.datasets import RecDataSet
-from freerec.data.postprocessing import RandomIDs, OrderedIDs
-from freerec.parser import Parser
-from freerec.launcher import Coach
-from freerec.models import RecSysArch
-from freerec.data.tags import USER, ITEM, ID
+from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 from freerec.utils import mkdirs
 
 from modules import Encoder, Decoder, SASRec, RandomMaskSubgraphs, LocalGraph
 
 freerec.declare(version='0.4.3')
 
-cfg = Parser()
+cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--hidden-size", type=int, default=32, help="embedding size")
 cfg.add_argument('--batch-size-con', default=2048, type=int, help='batch size for reconstruction task')
 cfg.add_argument('--num-reco-neg', default=40, type=int, help='number of negative items for reconstruction task')
-cfg.add_argument('--ssl-reg', default=1e-2, type=float, help='contrastive regularizer')
 cfg.add_argument('--mask-depth', default=3, type=int, help='k steps for generating transitional path')
 cfg.add_argument('--path-prob', default=0.5, type=float, help='random walk sample probability')
 cfg.add_argument("--num-heads", type=int, default=4, help='number of heads in attention')
@@ -47,7 +41,7 @@ cfg.set_defaults(
     lr=1e-3,
     weight_decay=1.e-6,
     eval_freq=1,
-    seed=19260817,
+    seed=1,
 )
 cfg.compile()
 
@@ -55,9 +49,9 @@ cfg.compile()
 NUM_PADS = 1
 
 
-class MAERec(RecSysArch):
+class MAERec(freerec.models.RecSysArch):
 
-    def __init__(self, dataset: RecDataSet) -> None:
+    def __init__(self, dataset: freerec.data.datasets.RecDataSet) -> None:
         super().__init__()
 
         self.encoder = Encoder(cfg)
@@ -81,7 +75,7 @@ class MAERec(RecSysArch):
             self.ii_adj_all_one = self.ii_adj_all_one.to(device)
         return super().to(device, dtype, non_blocking)
 
-    def construct_ii_graph(self, dataset: RecDataSet):
+    def construct_ii_graph(self, dataset: freerec.data.datasets.RecDataSet):
         from freeplot.utils import import_pickle, export_pickle
         Item = dataset.fields[ITEM, ID]
         path = os.path.join(cfg.dataset, str(cfg.ii_dist))
@@ -126,13 +120,13 @@ class MAERec(RecSysArch):
         idxs = torch.from_numpy(np.vstack([mat.row, mat.col]).astype(np.int64))
         vals = torch.from_numpy(mat.data.astype(np.float32))
         shape = torch.Size(mat.shape)
-        return torch.sparse.FloatTensor(idxs, vals, shape).cuda()
+        return torch.sparse.FloatTensor(idxs, vals, shape)
 
     def make_all_one_adj(self, adj):
         idxs = adj._indices()
         vals = torch.ones_like(adj._values())
         shape = adj.shape
-        return torch.sparse.FloatTensor(idxs, vals, shape).cuda()
+        return torch.sparse.FloatTensor(idxs, vals, shape)
 
     def sample(self):
         sample_scr, candidates = self.sampler(self.ii_adj_all_one, self.encoder.get_ego_embeds())
@@ -174,7 +168,7 @@ class MAERec(RecSysArch):
         reg_loss_recommender = 0
         for param in self.recommender.parameters():
             reg_loss_recommender += param.norm(2).square()
-        return reg_loss_encoder + reg_loss_decoder + reg_loss_recommender * cfg.weight_decay
+        return reg_loss_encoder + reg_loss_decoder + reg_loss_recommender
 
     def calc_cross_entropy(self, seq_out, pos_emb, neg_emb, tar_msk):
         seq_emb = seq_out.view(-1, cfg.hidden_size)
@@ -189,7 +183,7 @@ class MAERec(RecSysArch):
         ) / torch.sum(tar_msk)
         return loss
         
-    def forward(
+    def predict(
         self,
         seqs: torch.Tensor, positives: torch.Tensor, negatives: torch.Tensor,
         masked_adj: torch.Tensor, masked_edg: torch.Tensor
@@ -231,16 +225,24 @@ class MAERec(RecSysArch):
         loss_reco = self.decoder(item_emb_his, pos, neg)       
 
         loss_regu = self.calc_reg_loss()
-        return loss_main, loss_reco, loss_regu
+        return loss_main, loss_reco, loss_regu * cfg.weight_decay
 
-    def recommend(self, seqs: torch.Tensor, items: torch.Tensor):
+    def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
         item_emb, item_emb_his = self.encoder(self.ii_adj)
         seq_emb = self.recommender(seqs, item_emb)
         seq_emb = seq_emb[:, -1, :].unsqueeze(-1)  # (B, D, 1)
-        item_emb = item_emb[items] # (B, K, D)
+        item_emb = item_emb[pool] # (B, K, D)
         return item_emb.matmul(seq_emb).flatten(1) # (B, K)
 
-class CoachForMAERec(Coach):
+    def recommend_from_full(self, seqs: torch.Tensor):
+        item_emb, item_emb_his = self.encoder(self.ii_adj)
+        seq_emb = self.recommender(seqs, item_emb)
+        seq_emb = seq_emb[:, -1, :]  # (B, D)
+        item_emb = item_emb[NUM_PADS:] # (N, D)
+        return seq_emb.matmul(item_emb.t()) # (B, N)
+
+
+class CoachForMAERec(freerec.launcher.SeqCoach):
 
     def calc_reward(self, lastLosses, eps):
         if len(lastLosses) < 3:
@@ -261,7 +263,7 @@ class CoachForMAERec(Coach):
                 sample_scr, masked_adj, masked_edg = self.model.sample()
 
             users, seqs, targets, negatives = [col.to(self.device) for col in data]
-            loss_main, loss_reco, loss_regu = self.model(seqs, targets, negatives, masked_adj, masked_edg)
+            loss_main, loss_reco, loss_regu = self.model.predict(seqs, targets, negatives, masked_adj, masked_edg)
 
             loss = loss_main + loss_reco + loss_regu
 
@@ -278,19 +280,6 @@ class CoachForMAERec(Coach):
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
-    def evaluate(self, epoch: int, prefix: str = 'valid'):
-        for data in self.dataloader:
-            users, seqs, items = [col.to(self.device) for col in data]
-            scores = self.model.recommend(seqs, items)
-            targets = torch.zeros_like(scores)
-            targets[:, 0] = 1
-
-            self.monitor(
-                scores, targets,
-                n=len(users), mode="mean", prefix=prefix,
-                pool=['HITRATE', 'NDCG', 'RECALL']
-            )
-
 
 def main():
 
@@ -300,10 +289,10 @@ def main():
     cfg.num_items = Item.count + NUM_PADS
 
     # trainpipe
-    trainpipe = RandomIDs(
-        field=User, datasize=User.count
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_seqs(keepid=True)
     ).sharding_filter().seq_train_uniform_sampling_(
-        dataset # yielding (user, seqs, targets, negatives)
+        dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
     ).rshift_(
@@ -312,31 +301,16 @@ def main():
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
 
-    # validpipe
-    validpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_valid_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
-
-    # testpipe
-    testpipe = OrderedIDs(
-        field=User
-    ).sharding_filter().seq_test_sampling_(
-        dataset # yielding (user, items, (target + (100) negatives))
-    ).lprune_(
-        indices=[1], maxlen=cfg.maxlen,
-    ).rshift_(
-        indices=[1, 2], offset=NUM_PADS
-    ).lpad_(
-        indices=[1], maxlen=cfg.maxlen, padding_value=0
-    ).batch(cfg.batch_size).column_().tensor_()
+    validpipe = freerec.data.dataloader.load_seq_lpad_validpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
+    testpipe = freerec.data.dataloader.load_seq_lpad_testpipe(
+        dataset, cfg.maxlen, 
+        NUM_PADS, padding_value=0,
+        batch_size=100, ranking=cfg.ranking
+    )
 
     model = MAERec(dataset)
 
@@ -366,14 +340,17 @@ def main():
         device=cfg.device
     )
     coach.compile(
-        cfg, monitors=['loss', 'hitrate@1', 'hitrate@5', 'hitrate@10', 'ndcg@5', 'ndcg@10'],
+        cfg, 
+        monitors=[
+            'loss', 
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10'
+        ],
         which4best='ndcg@10'
     )
     coach.prepare()
     coach.fit()
 
 
-
 if __name__ == "__main__":
     main()
-

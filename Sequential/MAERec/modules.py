@@ -1,5 +1,4 @@
 
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,7 +12,7 @@ def sparse_dropout(x, keep_prob):
     msk = (torch.rand(x._values().size()) + keep_prob).floor().type(torch.bool)
     idx = x._indices()[:, msk]
     val = x._values()[msk]
-    return torch.sparse.FloatTensor(idx, val, x.shape, device=x.device)
+    return torch.sparse.FloatTensor(idx, val, x.shape).to(x.device)
 
 class Encoder(nn.Module):
 
