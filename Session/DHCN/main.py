@@ -58,7 +58,7 @@ class HyperConv(nn.Module):
         return super().to(device, dtype, non_blocking)
 
     def forward(self, features: torch.Tensor):
-        avgFeats = features.div(self.num_layers + 1)
+        avgFeats = features.div(self.num_layers + 1)#.detach()
         for _ in range(self.num_layers):
             features = self.conv(features, self.adj)
             avgFeats += features.div(self.num_layers + 1)
@@ -75,8 +75,8 @@ class LinConv(nn.Module):
 
     def forward(self, adj: torch.Tensor, seqEmbs: torch.Tensor, seqLens: torch.Tensor):
         # seqEmbs: (B, S, D)
-        # detaching LinConv according to the official code
-        features = torch.sum(seqEmbs, 1).div(seqLens).detach()
+        # detaching LinConv according to the official code ?
+        features = torch.sum(seqEmbs, 1).div(seqLens)#.detach()
         avgFeats = features.div(self.num_layers + 1)
         for _ in range(self.num_layers):
             features = adj.matmul(features)
@@ -138,7 +138,7 @@ class DHCN(freerec.models.RecSysArch):
         masks: torch.Tensor
     ):
         seqh = itemEmbsI[seqs] # (B, S, D)
-        positions = self.pos_embedding.weight[:seqs.size(-1)].unsqueeze(0).expand_as(seqh) # (B, S, D)
+        positions = self.pos_embedding.weight[-seqs.size(-1):].unsqueeze(0).expand_as(seqh) # (B, S, D)
 
         hs = seqh.sum(1).div(seqLens).unsqueeze(1) # (B, 1, D)
         nh = self.w_1(torch.cat([positions, seqh], -1)).tanh()
