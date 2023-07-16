@@ -203,7 +203,7 @@ class COTREC(freerec.models.RecSysArch):
         masks: torch.Tensor
     ):
         seqh = itemEmbsI[seqs] # (B, S, D)
-        positions = self.pos_embedding.weight[:seqs.size(-1)].unsqueeze(0).expand_as(seqh) # (B, S, D)
+        positions = self.pos_embedding.weight[-seqs.size(-1):].unsqueeze(0).expand_as(seqh) # (B, S, D)
 
         hs = seqh.sum(1).div(seqLens).unsqueeze(1) # (B, 1, D)
         nh = torch.matmul(torch.cat([positions, seqh], -1), self.w_1).tanh()
