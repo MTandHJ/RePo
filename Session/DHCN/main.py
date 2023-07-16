@@ -148,19 +148,6 @@ class DHCN(freerec.models.RecSysArch):
         sessEmbsI = torch.sum(alpha * seqh, 1) # (B, D)
         return sessEmbsI
 
-    def topk_func_random(
-        self, 
-        scores: torch.Tensor,
-        itemEmbs: torch.Tensor
-    ):
-        _, indices = scores.topk(self.num, dim=1, largest=True, sorted=True)
-
-        positives = itemEmbs[indices[:, :self.K]] # (B, K, D)
-        random_slices = torch.randint(self.K, self.num, (1,self.K), device=self.device).expand((indices.size(0), -1)) # (B, K)
-        random_slices = indices.gather(1, random_slices)
-        negatives = itemEmbs[random_slices] # (B, K, D)
-        return positives, negatives
-
     def _shuffle(self, features: torch.Tensor):
         B, D = features.shape
         shuffled = features[torch.randperm(B)]
