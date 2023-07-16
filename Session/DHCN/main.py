@@ -275,7 +275,7 @@ def main():
         dataset, leave_one_out=True # yielding (sess, seqs, target)
     ).rshift_(
         indices=[1], offset=NUM_PADS
-    ).batch(cfg.batch_size).column_().rpad_col_(
+    ).batch(cfg.batch_size).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
 
