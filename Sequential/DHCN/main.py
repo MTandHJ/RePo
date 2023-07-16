@@ -108,7 +108,8 @@ class DHCN(freerec.models.RecSysArch):
         self.glu1 = nn.Linear(embedding_dim, embedding_dim)
         self.glu2 = nn.Linear(embedding_dim, embedding_dim, bias=False)
 
-        self.loss_function = nn.CrossEntropyLoss()
+        # self.loss_function = nn.CrossEntropyLoss()
+        self.loss_function = freerec.criterions.BPRLoss()
 
         self.reset_parameters()
 
@@ -127,8 +128,10 @@ class DHCN(freerec.models.RecSysArch):
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
 
-    def criterion(self, scores: torch.Tensor, targets: torch.Tensor):
-        return self.loss_function(scores, targets.flatten())
+    def criterion(
+        self, positives: torch.Tensor, negatives: torch.Tensor
+    ):
+        return self.loss_function(positives, negatives)
 
     def calc_sess_emb(
         self, 
@@ -148,19 +151,6 @@ class DHCN(freerec.models.RecSysArch):
         sessEmbsI = torch.sum(alpha * seqh, 1) # (B, D)
         return sessEmbsI
 
-    def topk_func_random(
-        self, 
-        scores: torch.Tensor,
-        itemEmbs: torch.Tensor
-    ):
-        _, indices = scores.topk(self.num, dim=1, largest=True, sorted=True)
-
-        positives = itemEmbs[indices[:, :self.K]] # (B, K, D)
-        random_slices = torch.randint(self.K, self.num, (1,self.K), device=self.device).expand((indices.size(0), -1)) # (B, K)
-        random_slices = indices.gather(1, random_slices)
-        negatives = itemEmbs[random_slices] # (B, K, D)
-        return positives, negatives
-
     def _shuffle(self, features: torch.Tensor):
         B, D = features.shape
         shuffled = features[torch.randperm(B)]
@@ -177,13 +167,16 @@ class DHCN(freerec.models.RecSysArch):
             (1 - negScores.sigmoid()).add(1e-8).log().neg()
         )
 
-    def predict(self, seqs: torch.Tensor, targets: torch.Tensor):
+    def predict(
+        self, seqs: torch.Tensor, 
+        positives: torch.Tensor,
+        negatives: torch.Tensor,
+    ):
         r"""
         Parameters:
         -----------
         seqs: torch.Tensor, (B, S)
             Each row is [0, 0, ..., s1, s2, ..., sm]
-        targets: torch.Tensor, (B, 1)
         """
         masks = seqs.not_equal(0)
         seqLens = masks.sum(-1, keepdim=True)
@@ -207,14 +200,17 @@ class DHCN(freerec.models.RecSysArch):
             D_s_hat.mul(A_s_hat),
             self.Item.look_up(seqs) * masks.unsqueeze(-1), # (B, S, D)
             seqLens,
-        )
+        ) # (B, D)
 
         # Contrastive Learning
         loss_ssl = self.SSL(sessEmbsH, sessEmbsS)
 
         # Main loss
-        scores = sessEmbsH.matmul(itemEmbsH.t())
-        loss_item = self.criterion(scores + 1e-8, targets)
+        positives = sessEmbsH[positives - NUM_PADS].squeeze(1) # (B, D)
+        negatives = sessEmbsH[negatives - NUM_PADS].squeeze(1) # (B, D)
+        scores_pos = sessEmbsS.matmul(positives).sum(-1)
+        scores_neg = sessEmbsS.matmul(negatives).sum(-1)
+        loss_item = self.criterion(scores_pos, scores_neg)
         return loss_item + loss_ssl * cfg.beta
 
     def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
@@ -253,8 +249,8 @@ class CoachForDHCN(freerec.launcher.SessCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
-            sesses, seqs, targets = [col.to(self.device) for col in data]
-            loss = self.model.predict(seqs, targets)
+            sesses, seqs, positives, negatives = [col.to(self.device) for col in data]
+            loss = self.model.predict(seqs, positives, negatives)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -272,7 +268,7 @@ def main():
     trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
         source=dataset.train().to_roll_seqs(minlen=2)
     ).sharding_filter().seq_train_uniform_sampling_(
-        dataset, leave_one_out=True # yielding (user, seqs, targets, negatives)
+        dataset, leave_one_out=True # yielding (user, seqs, positives, negatives)
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
     ).rshift_(
@@ -280,7 +276,6 @@ def main():
     ).batch(cfg.batch_size).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
-
 
     validpipe = freerec.data.dataloader.load_seq_lpad_validpipe(
         dataset, cfg.maxlen, 
