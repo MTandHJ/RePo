@@ -1,0 +1,11 @@
+dataset: AmazonBeauty_550_Chron
+root: ../../data
+maxlen: 50
+epochs: 100
+batch_size: 512
+lr: 1.e-3
+optimizer: adamw
+weight_decay: 1.e-4
+embedding_dim: 64
+num_layers: 4
+feat_drop: 0.6
