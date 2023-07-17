@@ -18,7 +18,7 @@ freerec.declare(version='0.4.3')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--embedding-dim", type=int, default=100)
-cfg.add_argument('--num_layers', type=float, default=3, help='the number of layer used')
+cfg.add_argument('--num_layers', type=int, default=3, help='the number of layer used')
 cfg.add_argument('--beta', type=float, default=0.005, help='ssl task maginitude')
 
 cfg.set_defaults(

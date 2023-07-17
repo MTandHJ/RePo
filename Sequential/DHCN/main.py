@@ -19,7 +19,7 @@ freerec.declare(version='0.4.3')
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
 cfg.add_argument("--embedding-dim", type=int, default=64)
-cfg.add_argument('--num_layers', type=float, default=3, help='the number of layer used')
+cfg.add_argument('--num_layers', type=int, default=3, help='the number of layer used')
 cfg.add_argument('--beta', type=float, default=0.005, help='ssl task maginitude')
 
 cfg.set_defaults(
@@ -206,10 +206,10 @@ class DHCN(freerec.models.RecSysArch):
         loss_ssl = self.SSL(sessEmbsH, sessEmbsS)
 
         # Main loss
-        positives = sessEmbsH[positives - NUM_PADS].squeeze(1) # (B, D)
-        negatives = sessEmbsH[negatives - NUM_PADS].squeeze(1) # (B, D)
-        scores_pos = sessEmbsS.matmul(positives).sum(-1)
-        scores_neg = sessEmbsS.matmul(negatives).sum(-1)
+        positives = itemEmbsH[positives].squeeze(1) # (B, D)
+        negatives = itemEmbsH[negatives].squeeze(1) # (B, D)
+        scores_pos = sessEmbsS.mul(positives).sum(-1)
+        scores_neg = sessEmbsS.mul(negatives).sum(-1)
         loss_item = self.criterion(scores_pos, scores_neg)
         return loss_item + loss_ssl * cfg.beta
 
@@ -270,9 +270,9 @@ def main():
     ).sharding_filter().seq_train_uniform_sampling_(
         dataset, leave_one_out=True # yielding (user, seqs, positives, negatives)
     ).lprune_(
-        indices=[1, 2, 3], maxlen=cfg.maxlen
+        indices=[1], maxlen=cfg.maxlen
     ).rshift_(
-        indices=[1, 2, 3], offset=NUM_PADS
+        indices=[1], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().lpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
