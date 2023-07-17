@@ -16,7 +16,7 @@ freerec.declare(version="0.4.3")
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
-cfg.add_argument("--embedding-dim", type=int, default=32)
+cfg.add_argument("--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-layers", type=int, default=3)
 cfg.add_argument("--feat-drop", type=float, default=0.2, help="the dropout rate for features")
 
@@ -24,12 +24,11 @@ cfg.set_defaults(
     description="LESSR",
     root="../../data",
     dataset='MovieLens1M_550_Chron',
-    epochs=30,
+    epochs=100,
     batch_size=512,
     optimizer='adamw',
     lr=1e-3,
     weight_decay=1.e-4,
-    eval_freq=1,
     seed=1,
 )
 cfg.compile()
@@ -391,7 +390,7 @@ def fix_weight_decay(model):
 
 def main():
 
-    dataset = getattr(freerec.data.datasets.session, cfg.dataset)(root=cfg.root)
+    dataset = getattr(freerec.data.datasets.sequential, cfg.dataset)(root=cfg.root)
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
