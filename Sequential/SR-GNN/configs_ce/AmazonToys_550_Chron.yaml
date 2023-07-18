@@ -1,0 +1,12 @@
+dataset: AmazonToys_550_Chron
+root: ../../data
+epochs: 30
+batch_size: 100
+lr: 5.e-3
+weight_decay: 1.e-6
+maxlen: 50
+embedding_dim: 64
+hidden_size: 64
+num_layers: 1
+lr_dc: 0.1
+lr_dc_step: 3
