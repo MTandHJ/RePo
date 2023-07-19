@@ -1,6 +1,6 @@
 dataset: AmazonHome_550_Chron
 root: ../../data
-epochs: 50
+epochs: 200
 batch_size: 512
 optimizer: adam
 lr: 1.e-3

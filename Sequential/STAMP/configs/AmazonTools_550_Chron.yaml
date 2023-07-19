@@ -1,6 +1,6 @@
 dataset: AmazonTools_550_Chron
 root: ../../data
-epochs: 100
+epochs: 200
 batch_size: 512
 lr: 5.e-4
 weight_decay: 1.e-8
