@@ -1,0 +1,11 @@
+dataset: AmazonOffice_550_Chron
+root: ../../data
+maxlen: 50
+epochs: 30
+batch_size: 512
+lr: 5.e-3
+optimizer: adamw
+weight_decay: 0.
+embedding_dim: 64
+num_layers: 3
+feat_drop: 0.7
