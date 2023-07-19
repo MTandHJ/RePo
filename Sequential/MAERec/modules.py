@@ -256,7 +256,9 @@ class LocalGraph(nn.Module):
 
     def make_noise(self, scores):
         noise = torch.rand(scores.shape, device=scores.device)
-        noise = -torch.log(-torch.log(noise))
+        # EPS = 1.e-8
+        # It is different from the official code wherein EPS = 0.
+        noise = -torch.log(-torch.log(noise + 1.e-8).add(1.e-8))
         return scores + noise
 
     def forward(self, adj, embeds, foo=None):
