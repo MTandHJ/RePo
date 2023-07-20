@@ -26,12 +26,11 @@ cfg.set_defaults(
     description="SR-GNN",
     root="../../data",
     dataset='MovieLens1M_550_Chron',
-    epochs=30,
+    epochs=200,
     batch_size=100,
     optimizer='adam',
     lr=1e-3,
     weight_decay=1.e-5,
-    eval_freq=1,
     seed=1,
 )
 cfg.compile()
