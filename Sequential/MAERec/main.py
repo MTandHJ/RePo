@@ -27,6 +27,7 @@ cfg.add_argument('--num-trm-layers', default=2, type=int, help='number of gcn la
 cfg.add_argument('--num-mask-cand', default=50, type=int, help='number of seeds in patch masking')
 cfg.add_argument('--mask-steps', default=10, type=int, help='steps to train on the same sampled graph')
 cfg.add_argument('--eps', default=0.2, type=float, help='scaled weight for task-adaptive function')
+cfg.add_argument('--weight4reco', default=0.2, type=float, help='weight for reconstruction loss')
 cfg.add_argument("--attention-probs-dropout-prob", type=float, default=0.3, help="attention dropout p")
 cfg.add_argument("--hidden-dropout-prob", type=float, default=0.3, help="hidden dropout p")
 cfg.add_argument("--ii-dist", type=int, default=3, help="distance for i-i graph construction")
@@ -225,7 +226,7 @@ class MAERec(freerec.models.RecSysArch):
         loss_reco = self.decoder(item_emb_his, pos, neg)       
 
         loss_regu = self.calc_reg_loss()
-        return loss_main, loss_reco, loss_regu * cfg.weight_decay
+        return loss_main, loss_reco * cfg.weight4reco, loss_regu * cfg.weight_decay
 
     def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
         item_emb, item_emb_his = self.encoder(self.ii_adj)

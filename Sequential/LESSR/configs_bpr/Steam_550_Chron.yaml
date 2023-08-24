@@ -1,0 +1,11 @@
+dataset: Steam_550_Chron
+root: ../../data
+maxlen: 50
+epochs: 300
+batch_size: 512
+lr: 5.e-4
+optimizer: adamw
+weight_decay: 1.e-8
+embedding_dim: 64
+num_layers: 4
+feat_drop: 0.7
