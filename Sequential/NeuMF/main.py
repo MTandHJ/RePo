@@ -16,7 +16,7 @@ cfg.add_argument("--hidden-sizes", type=str, default="64,32,16,8")
 cfg.set_defaults(
     description="NeuMF",
     root="../../data",
-    dataset='Gowalla_10100811_Chron',
+    dataset='MovieLens1M_550_Chron',
     epochs=200,
     batch_size=1024,
     optimizer='adam',
@@ -144,7 +144,7 @@ class CoachForNeuMF(freerec.launcher.GenCoach):
 
 def main():
 
-    dataset = getattr(freerec.data.datasets.general, cfg.dataset)(cfg.root)
+    dataset = getattr(freerec.data.datasets.sequential, cfg.dataset)(cfg.root)
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
@@ -192,8 +192,12 @@ def main():
     )
     coach.compile(
         cfg, 
-        monitors=['loss', 'recall@10', 'recall@20', 'ndcg@10', 'ndcg@20'],
-        which4best='ndcg@20'
+        monitors=[
+            'loss', 
+            'hitrate@1', 'hitrate@5', 'hitrate@10',
+            'ndcg@5', 'ndcg@10'
+        ],
+        which4best='ndcg@10'
     )
     coach.fit()
 
