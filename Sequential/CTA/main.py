@@ -170,6 +170,11 @@ class SATT(freerec.models.RecSysArch):
         x_embed = self.Item.look_up(seqs) # (B, S, D)
         src_mask = (seqs == 0)
         src_mask_neg = (seqs != 0)
+
+        # XXX: The official implementation replaces it with the next-item's timestamp,
+        # but I think this operation leads to future information leakage.
+        last_t = t[:, [-1]] # (B, 1)
+        t = last_t - t 
         
         x = x_embed.transpose(0, 1) # (S, B, D)
       
