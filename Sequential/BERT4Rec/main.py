@@ -167,11 +167,13 @@ def main():
         ).sharding_filter().seq_valid_yielding_(
             dataset
         ).lprune_(
-            indices=[1], maxlen=cfg.maxlen,
+            indices=[1], maxlen=cfg.maxlen - 1,
         ).rshift_(
             indices=[1], offset=NUM_PADS
         ).lpad_(
-            indices=[1], maxlen=cfg.maxlen, padding_value=0
+            indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
+        ).rpad_(
+            indices=[1], maxlen=cfg.maxlen - 1, padding_value=1 # 1: mask token
         ).batch(128).column_().tensor_().field_(
             User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
         )
@@ -197,11 +199,13 @@ def main():
         ).sharding_filter().seq_test_yielding_(
             dataset
         ).lprune_(
-            indices=[1], maxlen=cfg.maxlen,
+            indices=[1], maxlen=cfg.maxlen - 1,
         ).rshift_(
             indices=[1], offset=NUM_PADS
         ).lpad_(
-            indices=[1], maxlen=cfg.maxlen, padding_value=0
+            indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
+        ).rpad_(
+            indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
         ).batch(100).column_().tensor_().field_(
             User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
         )
