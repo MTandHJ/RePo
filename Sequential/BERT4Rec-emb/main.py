@@ -2,8 +2,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchdata.datapipes as dp
 
 import freerec
 from freerec.data.fields import FieldModuleList

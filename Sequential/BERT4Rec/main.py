@@ -2,8 +2,6 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torchdata.datapipes as dp
 
 import freerec
 from freerec.data.fields import FieldModuleList
@@ -173,7 +171,7 @@ def main():
         ).lpad_(
             indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
         ).rpad_(
-            indices=[1], maxlen=cfg.maxlen - 1, padding_value=1 # 1: mask token
+            indices=[1], maxlen=cfg.maxlen, padding_value=1 # 1: mask token
         ).batch(128).column_().tensor_().field_(
             User.buffer(), Item.buffer(tags=POSITIVE), Item.buffer(tags=UNSEEN), Item.buffer(tags=SEEN)
         )
