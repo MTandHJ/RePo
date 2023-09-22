@@ -4,6 +4,7 @@
 
 [[official-code](https://github.com/Charleo85/seqrec)]
 
+**Note:** This implementation might be wrong somewhere.
 
 ## Usage
 

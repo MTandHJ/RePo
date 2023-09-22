@@ -23,7 +23,7 @@ cfg.add_argument("--num-blocks", type=int, default=2)
 cfg.add_argument("--hidden-size", type=int, default=500)
 cfg.add_argument("--dropout-rate", type=float, default=0.)
 cfg.add_argument("--hidden-dropout-rate", type=float, default=0.5)
-cfg.add_argument('--kernel_type', default='log-1', type=str, 
+cfg.add_argument('--kernel-type', default='log-1', type=str, 
     help="kernels for timespan transformation: exp-3 equals to [exp, exp, exp]; exp-2-log-2 equals to [exp, exp, log, log]"
 )
 
@@ -66,9 +66,10 @@ class PositionalEncoding(nn.Module):
 
 
 class SATT(freerec.models.RecSysArch):
+
     def __init__(
         self, fields: FieldModuleList,
-        kernel_type='exp-1'
+        kernel_type=cfg.kernel_type
     ):
         super().__init__()
         
@@ -78,7 +79,7 @@ class SATT(freerec.models.RecSysArch):
 
         encoder_layer = TransformerEncoderLayer(cfg.hidden_size, cfg.num_heads, dim_feedforward=2048, dropout=cfg.hidden_dropout_rate)
         norm = nn.LayerNorm(cfg.hidden_size)
-        self.encoder = TransformerEncoder(encoder_layer, cfg.num_blocks, norm=norm).to(self.device)
+        self.encoder = TransformerEncoder(encoder_layer, cfg.num_blocks, norm=norm)
         
         self.decoder = MultiheadAttention(cfg.hidden_size, cfg.num_heads, dropout=cfg.hidden_dropout_rate)
         
@@ -86,19 +87,19 @@ class SATT(freerec.models.RecSysArch):
         kernel_types = []
 
         self.params = []
-        for i in range( len(parts) ):
+        for i in range(len(parts)):
             pi = parts[i]
             if pi in {'exp', 'exp*', 'log', 'lin', 'exp^', 'exp*^', 'log^', 'lin^', 'ind', 'const', 'thres'}:
                 if pi.endswith('^'):
                     var = (
-                        nn.Parameter(torch.rand(1, requires_grad=True, device=self.device) * 5 + 10), 
-                        nn.Parameter(torch.rand(1, requires_grad=True, device=self.device))
+                        nn.Parameter(torch.rand(1, requires_grad=True) * 5 + 10), 
+                        nn.Parameter(torch.rand(1, requires_grad=True))
                     )
                     kernel_types.append(pi[:-1])
                 else:
                     var = (
-                        nn.Parameter(torch.rand(1, requires_grad=True, device=self.device) * 0.01), 
-                        nn.Parameter(torch.rand(1, requires_grad=True, device=self.device))
+                        nn.Parameter(torch.rand(1, requires_grad=True) * 0.01), 
+                        nn.Parameter(torch.rand(1, requires_grad=True))
                     )
                     kernel_types.append(pi)
                     
@@ -114,14 +115,14 @@ class SATT(freerec.models.RecSysArch):
                     for j in range(val-1):
                         if pi.endswith('^'):
                             var = (
-                                nn.Parameter(torch.rand(1, requires_grad=True, device=self.device) * 5 + 10), 
-                                nn.Parameter(torch.rand(1, requires_grad=True, device=self.device))
+                                nn.Parameter(torch.rand(1, requires_grad=True) * 5 + 10), 
+                                nn.Parameter(torch.rand(1, requires_grad=True))
                             )
                             kernel_types.append(pi[:-1])
                         else:
                             var = (
-                                nn.Parameter(torch.rand(1, requires_grad=True, device=self.device) * 0.01), 
-                                nn.Parameter(torch.rand(1, requires_grad=True, device=self.device))
+                                nn.Parameter(torch.rand(1, requires_grad=True) * 0.01), 
+                                nn.Parameter(torch.rand(1, requires_grad=True))
                             )
                             kernel_types.append(pi)
                         
@@ -134,7 +135,6 @@ class SATT(freerec.models.RecSysArch):
                 raise KeyError(f"No matching kernel {pi} ...")
                 
         self.kernel_num = len(kernel_types)
-        infoLogger(kernel_types, self.params)
             
         def decay_constructor(t):
             kernels = []
