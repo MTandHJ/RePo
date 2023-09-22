@@ -1,0 +1,4 @@
+dataset: MovieLens1M_10101811_Chron
+root: ../../data
+layers: 3
+device: cpu

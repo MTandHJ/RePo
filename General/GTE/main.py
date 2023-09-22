@@ -13,7 +13,6 @@ from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 freerec.declare(version='0.4.3')
 
 cfg = freerec.parser.Parser()
-cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
 cfg.set_defaults(
     description="GTE",
@@ -50,8 +49,8 @@ class GTE(freerec.models.RecSysArch):
         self.reset_parameters()
 
     def reset_parameters(self):
-        self.User.embeddings.data.fill_(0.)
-        self.Item.embeddings.data.copy_(
+        self.User.embeddings.weight.data.fill_(0.)
+        self.Item.embeddings.weight.data.copy_(
             torch.eye(self.Item.count)
         )
 
@@ -63,7 +62,7 @@ class GTE(freerec.models.RecSysArch):
     def graph(self, graph: Data):
         self.__graph = graph
         T.ToSparseTensor()(self.__graph)
-        self.R = self.__graph[f"{self.User.name}2{self.Item.name}"].adj_t.to_torch_sparse_coo_tensor()
+        self.R = self.__graph[f"{self.User.name}2{self.Item.name}"].adj_t.to_torch_sparse_coo_tensor().transpose(0, 1)
 
     def to(
         self, device: Optional[Union[int, torch.device]] = None, 
@@ -72,11 +71,12 @@ class GTE(freerec.models.RecSysArch):
     ):
         if device:
             self.graph.to(device)
+            self.R = self.R.to(device)
         return super().to(device, dtype, non_blocking)
 
     def forward(self):
-        userFeats = self.User.embeddings.data
-        itemFeats = self.Item.embeddings.data
+        userFeats = self.User.embeddings.weight.data
+        itemFeats = self.Item.embeddings.weight.data
         for _ in range(self.num_layers):
             userFeats_ = torch.sparse.mm(self.R, itemFeats) + userFeats
             itemFeats_ = torch.sparse.mm(self.R.transpose(0, 1), userFeats) + itemFeats
@@ -84,19 +84,14 @@ class GTE(freerec.models.RecSysArch):
             itemFeats = itemFeats_
         return userFeats, itemFeats
 
-    def predict(self, users: torch.Tensor, items: torch.Tensor):
-        userFeats, itemFeats = self.forward()
-        userFeats = userFeats[users] # B x 1 x D
-        itemFeats = itemFeats[items] # B x n x D
-        userEmbs = self.User.look_up(users) # B x 1 x D
-        itemEmbs = self.Item.look_up(items) # B x n x D
-        return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
-
     def recommend_from_full(self):
         return self.forward()
 
 
-class CoachForGTE(freerec.launcher.GenCoach): ...
+class CoachForGTE(freerec.launcher.GenCoach):
+
+    def train_per_epoch(self, epoch: int): 
+        pass
 
 
 def main():
@@ -120,7 +115,7 @@ def main():
 
     tokenizer = FieldModuleList(dataset.fields)
     tokenizer.embed(
-        cfg.embedding_dim, ID
+        Item.count, ID
     )
     model = GTE(
         tokenizer, dataset.train().to_bigraph((USER, ID), (ITEM, ID)), num_layers=cfg.layers

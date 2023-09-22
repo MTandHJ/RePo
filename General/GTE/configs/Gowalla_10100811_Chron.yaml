@@ -1,0 +1,4 @@
+dataset: Gowalla_10100811_Chron
+root: ../../data
+layers: 3
+device: cpu

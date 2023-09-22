@@ -1,0 +1,4 @@
+dataset: AmazonElectronics_10104811_Chron
+root: ../../data
+layers: 3
+device: cpu
