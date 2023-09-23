@@ -4,7 +4,7 @@ maxlen: 200
 num_heads: 4
 num_blocks: 2
 hidden_size: 64
-dropout_rate: 0.2
+dropout_rate: 0.1
 mask_prob: 0.3
 epochs: 500
 batch_size: 256
