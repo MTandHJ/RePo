@@ -1,0 +1,13 @@
+dataset: MovieLens1M_10101811_Chron
+root: ../../data
+path: ../MF-BPR/MF-BPR-200-ML/ML-5/MovieLens1M_10101811_Chron/0-1015200005
+embedding_dim: 200
+ratio: 10
+epochs: 1000
+batch_size: 2048
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-6
+model: MF
+temperature: 0.5
+weight4hard: 0.3
