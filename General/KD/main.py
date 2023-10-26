@@ -59,6 +59,7 @@ class KD(freerec.models.RecSysArch):
         self.student = BACKBONE(fields, cfg.embedding_dim // cfg.ratio, graph=graph, num_layers=num_layers)
 
         self.teacher.load_state_dict(torch.load(os.path.join(cfg.path, cfg.filename), map_location='cpu'))
+        self.teacher.eval()
 
     def predict(self, users: torch.Tensor, items: torch.Tensor):
         logits_s = self.student.predict(users, items)
