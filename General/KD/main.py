@@ -22,7 +22,7 @@ cfg.add_argument("--filename", type=str, default='best.pt', help="the filename o
 cfg.add_argument("--model", type=str, choices=('MF', 'LightGCN'), default='MF')
 cfg.add_argument("--num-layers", type=int, default=3, help="Valid for LightGCN")
 cfg.add_argument("--temperature", type=float, default=1.)
-cfg.add_argument("--weight4hard", type=float, default=1.)
+cfg.add_argument("--weight4soft", type=float, default=1.)
 cfg.set_defaults(
     description="KD",
     root="../../data",
@@ -104,18 +104,18 @@ class KLDivLoss4Logits(freerec.criterions.BaseCriterion):
 
 class KDLoss(freerec.criterions.BaseCriterion):
 
-    def __init__(self, temperature: float, weight4hard: float) -> None:
+    def __init__(self, temperature: float, weight4soft: float) -> None:
         super().__init__()
 
         self.main_loss = freerec.criterions.BPRLoss('mean')
         self.kdiv_loss = KLDivLoss4Logits('batchmean')
         self.temperature = temperature
-        self.weight4hard = weight4hard
+        self.weight4soft = weight4soft
 
     def forward(self, logits_s: torch.Tensor, logits_t: torch.Tensor):
         hard_loss = self.main_loss(logits_s[:, 0], logits_s[:, 1])
         soft_loss = self.kdiv_loss(logits_s / self.temperature, logits_t / self.temperature) * (self.temperature ** 2)
-        return soft_loss * (1 - self.weight4hard) + hard_loss * self.weight4hard
+        return hard_loss + self.weight4soft * soft_loss
 
 
 def main():
@@ -157,7 +157,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = KDLoss(cfg.temperature, cfg.weight4hard)
+    criterion = KDLoss(cfg.temperature, cfg.weight4soft)
 
     coach = CoachForKD(
         trainpipe=trainpipe,
