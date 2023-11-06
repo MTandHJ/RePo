@@ -21,10 +21,8 @@ cfg.add_argument("--path", type=str, default=None, help="the path of Teacher mod
 cfg.add_argument("--filename", type=str, default='best.pt', help="the filename of Teacher model")
 cfg.add_argument("--model", type=str, choices=('MF', 'LightGCN'), default='MF')
 cfg.add_argument("--num-layers", type=int, default=3, help="Valid for LightGCN")
-
-cfg.add_argument("--similarity", type=str, choices=('cosine', 'inner'), default='cosine')
-cfg.add_argument("--weight4ftd", type=float, default=0.001, help="weight for FTD loss")
-
+cfg.add_argument("--temperature", type=float, default=1.)
+cfg.add_argument("--weight4soft", type=float, default=1.)
 cfg.set_defaults(
     description="KD",
     root="../../data",
@@ -47,7 +45,7 @@ else:
     raise ValueError(f"Only 'MF' or 'LightGCN' is supported ...")
 
 
-class FTD(freerec.models.RecSysArch):
+class KD(freerec.models.RecSysArch):
 
     def __init__(
         self, 
@@ -63,50 +61,20 @@ class FTD(freerec.models.RecSysArch):
         self.teacher.load_state_dict(torch.load(os.path.join(cfg.path, cfg.filename), map_location='cpu'))
         self.teacher.eval()
 
-    def calculate_similarity(self, x: torch.Tensor, y: torch.Tensor):
-        r"""
-        Pairwise similarity.
-
-        Parameters:
-        -----------
-        x: torch.Tensor, (m, d)
-        y: torch.Tensor, (n, d)
-
-        Returns:
-        --------
-        Similarity matrix: torch.Tensor, (m, n)
-        """
-        return x @ y.t()
-    
-    def ftd_loss(self, users: torch.Tensor, items: torch.Tensor):
-        users = users.flatten().unique()
-        items = items.flatten().unique()
-
-        with torch.no_grad():
-            userFeats_t, itemFeats_t = self.teacher.recommend_from_full()
-        userFeats_s, itemFeats_s = self.student.recommend_from_full()
-
-        feats_t = torch.cat((userFeats_t[users], itemFeats_t[items]), dim=0)
-        feats_s = torch.cat((userFeats_s[users], itemFeats_s[items]), dim=0)
-
-        if cfg.similarity == 'cosine':
-            feats_t = F.normalize(feats_t, dim=1)
-            feats_s = F.normalize(feats_s, dim=1)
-
-        sim_t = self.calculate_similarity(feats_t, feats_t)
-        sim_s = self.calculate_similarity(feats_s, feats_s)
-
-        return F.mse_loss(sim_s, sim_t, reduction='sum')
-
     def predict(self, users: torch.Tensor, items: torch.Tensor):
         logits_s = self.student.predict(users, items)
-        return logits_s, self.ftd_loss(users, items)
+        userFeats, itemFeats = self.student.recommend_from_full()
+        logits_full_s = userFeats[users.flatten()] @ itemFeats.t()
+        with torch.no_grad():
+            userFeats, itemFeats = self.teacher.recommend_from_full()
+            logits_full_t = userFeats[users.flatten()] @ itemFeats.t()
+        return logits_s, logits_full_s, logits_full_t
 
     def recommend_from_full(self):
         return self.student.recommend_from_full()
 
 
-class CoachForFTD(freerec.launcher.GenCoach):
+class CoachForKD(freerec.launcher.GenCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
@@ -114,14 +82,46 @@ class CoachForFTD(freerec.launcher.GenCoach):
             items = torch.cat(
                 [positives, negatives], dim=1
             )
-            logits_s, ftd_loss = self.model.predict(users, items)
-            loss = self.criterion(logits_s[:, 0], logits_s[:, 1]) + self.cfg.weight4ftd * ftd_loss
+            logits_s, logits_full_s, logits_full_t = self.model.predict(users, items)
+            loss = self.criterion(logits_s, logits_full_s, logits_full_t)
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
+
+
+class KLDivLoss4Logits(freerec.criterions.BaseCriterion):
+    """KLDivLoss with logits"""
+
+    def __init__(self, reduction: str = 'batchmean') -> None:
+        super().__init__('mean')
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor):
+        assert logits.size() == targets.size()
+        inputs = F.log_softmax(logits, dim=-1)
+        targets = F.softmax(targets, dim=-1)
+        return F.kl_div(inputs, targets, reduction=self.reduction)
+
+class KDLoss(freerec.criterions.BaseCriterion):
+
+    def __init__(self, temperature: float, weight4soft: float) -> None:
+        super().__init__()
+
+        self.main_loss = freerec.criterions.BPRLoss('mean')
+        self.kdiv_loss = KLDivLoss4Logits('batchmean')
+        self.temperature = temperature
+        self.weight4soft = weight4soft
+
+    def forward(
+        self, logits_s: torch.Tensor, 
+        logits_full_s: torch.Tensor, logits_full_t: torch.Tensor
+    ):
+        hard_loss = self.main_loss(logits_s[:, 0], logits_s[:, 1])
+        soft_loss = self.kdiv_loss(logits_full_s / self.temperature, logits_full_t / self.temperature) * (self.temperature ** 2)
+        return hard_loss + self.weight4soft * soft_loss
 
 
 def main():
@@ -145,7 +145,7 @@ def main():
 
     tokenizer = FieldModuleList(dataset.fields)
 
-    model = FTD(
+    model = KD(
         tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID)), 
         num_layers=cfg.num_layers
     )
@@ -163,9 +163,9 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = freerec.criterions.BPRLoss(reduction='sum')
+    criterion = KDLoss(cfg.temperature, cfg.weight4soft)
 
-    coach = CoachForFTD(
+    coach = CoachForKD(
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
