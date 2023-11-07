@@ -23,8 +23,8 @@ cfg.add_argument("--filename", type=str, default='best.pt', help="the filename o
 cfg.add_argument("--model", type=str, choices=('MF', 'LightGCN'), default='MF')
 cfg.add_argument("--num-layers", type=int, default=3, help="Valid for LightGCN")
 
-cfg.add_argument("--similarity ", type=str, choices=('cosine', 'inner'), default='cosine')
-cfg.add_argument("--topology ", type=str, choices=('group2group', 'group2entity'), default='group2group')
+cfg.add_argument("--similarity", type=str, choices=('cosine', 'inner'), default='cosine')
+cfg.add_argument("--topology", type=str, choices=('group2group', 'group2entity'), default='group2group')
 cfg.add_argument("--weight4htd", type=float, default=0.001, help="weight for FTD loss")
 cfg.add_argument("--gamma", type=float, default=0.5, help="(0, 1), balacing topology loss and group assignment loss")
 cfg.add_argument("--K", type=int, default=30, help="#Experts")
@@ -77,6 +77,7 @@ class HTD(freerec.models.RecSysArch):
         super().__init__()
 
         self.T = T_START
+        self.K = cfg.K
 
         self.teacher = BACKBONE(fields, cfg.embedding_dim, graph=graph, num_layers=num_layers).requires_grad_(False)
         self.student = BACKBONE(fields, cfg.embedding_dim // cfg.ratio, graph=graph, num_layers=num_layers)
@@ -93,11 +94,11 @@ class HTD(freerec.models.RecSysArch):
         self.itemProjectors = nn.ModuleList([Projector(dims) for i in range(self.K)])
 
         self.userClassifier = nn.Sequential(
-            nn.Linear(cfg.embedding_dim, cfg.K),
+            nn.Linear(cfg.embedding_dim, self.K),
             nn.Softmax(dim=1)
         )
         self.itemClassifier = nn.Sequential(
-            nn.Linear(cfg.embedding_dim, cfg.K),
+            nn.Linear(cfg.embedding_dim, self.K),
             nn.Softmax(dim=1)
         )
 
@@ -144,7 +145,7 @@ class HTD(freerec.models.RecSysArch):
         alpha = classifier(feats_t) + 1.e-10 # (n, K)
         g = torch.distributions.Gumbel(0, 1).sample(alpha.size()).to(self.device)
         z = F.softmax(
-            (alpha.log() + g) / self.T
+            (alpha.log() + g) / self.T, dim=1
         ).unsqueeze(1).repeat((1, cfg.embedding_dim, 1)) # (n, D, K)
 
         feat_s2t = torch.cat([p(feats_s).unsqueeze(-1) for p in projectors], dim=-1) # (n, D, K)
