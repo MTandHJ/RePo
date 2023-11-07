@@ -86,7 +86,7 @@ class GRU4Rec(freerec.models.RecSysArch):
     ) -> None:
         super().__init__()
 
-        hidden_size = cfg.hidden_size
+        hidden_size = embedding_dim
         num_gru_layers = cfg.num_gru_layers
         dropout_rate = cfg.dropout_rate
 
