@@ -60,7 +60,7 @@ elif cfg.model == 'SASRec':
     COACH = CoachForSASRec
     cfg.NUM_PADS = 1
 else:
-    raise ValueError(f"Only 'MF' or 'LightGCN' is supported ...")
+    raise ValueError(f"Only 'MF' or 'GRU4Rec' or 'SASRec' is supported ...")
 
 
 class KD(freerec.models.RecSysArch):
