@@ -11,7 +11,6 @@ from freerec.data.tags import USER, ITEM, ID
 from copy import deepcopy
 
 
-
 class UnifiedBackbone(freerec.models.RecSysArch):
 
     def predict(
@@ -75,8 +74,11 @@ class BPRMF(UnifiedBackbone):
         userEmbs = self.User.look_up(users) # B x 1 x D
         return userEmbs
 
+    def recommend_from_full(self):
+        return self.User.embeddings.weight, self.Item.embeddings.weight
 
-class GRU4Rec(freerec.models.RecSysArch):
+
+class GRU4Rec(UnifiedBackbone):
 
     def __init__(
         self, 
@@ -155,7 +157,7 @@ class PointWiseFeedForward(nn.Module):
         return outputs
 
 
-class SASRec(freerec.models.RecSysArch):
+class SASRec(UnifiedBackbone):
 
     def __init__(
         self, 
@@ -175,7 +177,7 @@ class SASRec(freerec.models.RecSysArch):
         self.num_blocks = num_blocks
         self.fields = deepcopy(fields)
         self.fields.embed(
-            embedding_dim, padding_idx=0
+            embedding_dim, ITEM, ID, padding_idx=0
         )
         self.Item = self.fields[ITEM, ID]
 

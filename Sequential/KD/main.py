@@ -69,7 +69,7 @@ class KD(freerec.models.RecSysArch):
         super().__init__()
 
         self.teacher = BACKBONE(fields, cfg.embedding_dim, cfg).requires_grad_(False)
-        self.student = BACKBONE(fields, cfg.embeddimg_dim // cfg.ratio, cfg)
+        self.student = BACKBONE(fields, cfg.embedding_dim // cfg.ratio, cfg)
 
         self.teacher.load_state_dict(torch.load(os.path.join(cfg.path, cfg.filename), map_location='cpu'))
         self.teacher.eval()
@@ -86,9 +86,12 @@ class KD(freerec.models.RecSysArch):
         posLogits_s, negLogits_s = self.student.predict(users, positives, negatives)
         with torch.no_grad():
             posLogits_t, negLogits_t = self.teacher.predict(users, positives, negatives)
-        logits_s = torch.cat((posLogits_s, negLogits_s), dim=1)
-        logits_t = torch.cat((posLogits_t, negLogits_t), dim=1)
+        logits_s = torch.stack((posLogits_s, negLogits_s), dim=1)
+        logits_t = torch.stack((posLogits_t, negLogits_t), dim=1)
         return logits_s, logits_t
+
+    def recommend(self, **kwargs):
+        return self.student.recommend(**kwargs)
 
 
 class KLDivLoss4Logits(freerec.criterions.BaseCriterion):
