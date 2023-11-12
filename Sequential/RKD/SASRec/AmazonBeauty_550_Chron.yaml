@@ -1,0 +1,20 @@
+root: ../../data
+dataset: AmazonBeauty_550_Chron
+embedding_dim: 200
+ratio: 10
+path: ../SASRec-BPR/Beauty-200
+model: SASRec
+
+maxlen: 50
+num_heads: 1
+num_blocks: 2
+dropout_rate: 0.2
+
+weight4dist: 0.1
+weight4angle: 0.5
+
+epochs: 500
+batch_size: 512
+optimizer: adam
+lr: 1.e-3
+weight_decay: 0.
