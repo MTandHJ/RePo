@@ -95,7 +95,7 @@ class RKD(freerec.models.RecSysArch):
             - (B, S): seqs for GRU4Rec or SASRec
         """
         items = torch.stack((positives, negatives), dim=-1) # (B, *, 2)
-        userFeats_s = self.student(users).unsqueeze(-2) # (B, *, D)
+        userFeats_s = self.student(users).unsqueeze(-2) # (B, *, 1, D)
         itemFeats_s = self.student.Item.look_up(items) # (B, *, 2, D)
         with torch.no_grad():
             userFeats_t = self.teacher(users).unsqueeze(-2)
