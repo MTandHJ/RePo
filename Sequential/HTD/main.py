@@ -85,6 +85,8 @@ class HTD(freerec.models.RecSysArch):
     def __init__(self, fields: FieldModuleList) -> None:
         super().__init__()
 
+        self.K = cfg.K
+
         self.teacher = BACKBONE(fields, cfg.embedding_dim, cfg).requires_grad_(False)
         self.student = BACKBONE(fields, cfg.embedding_dim // cfg.ratio, cfg)
 
@@ -224,7 +226,7 @@ class HTD(freerec.models.RecSysArch):
         feats_s = torch.cat((userFeats_s, itemFeats_s), dim=0) # (B, d)
         groups = torch.cat((
             self.group(userFeats_t, self.userClassifier),
-            self.group(itemFeats_t, self.itemClassifier) + cfg.K
+            self.group(itemFeats_t, self.itemClassifier) + self.K
         ), dim=0)
 
 
@@ -254,15 +256,14 @@ class HTD(freerec.models.RecSysArch):
         items = torch.stack((positives, negatives), dim=-1) # (B, *, 2)
         userFeats_s = self.student(users).unsqueeze(-2) # (B, *, 1, D)
         itemFeats_s = self.student.Item.look_up(items) # (B, *, 2, D)
+        logits_s = userFeats_s.mul(itemFeats_s).sum(-1) # (B, *, 2)
         with torch.no_grad():
             userFeats_t = self.teacher(users).unsqueeze(-2)
         # (B x *, 1/2, D)
-        userFeats_s = userFeats_s.flatten(end_dim=1)
-        itemFeats_s = itemFeats_s.flatten(end_dim=1)
-        userFeats_t = userFeats_t.flatten(end_dim=1)
+        userFeats_s = userFeats_s.flatten(end_dim=-2) # (B x *, D)
+        userFeats_t = userFeats_t.flatten(end_dim=-2) # (B x *, D)
 
-        logits_s = userFeats_s.mul(itemFeats_s).sum(-1)
-        return logits_s, self.htd_loss(userFeats_s, userFeats_t, items)
+        return logits_s.flatten(end_dim=-2), self.htd_loss(userFeats_s, userFeats_t, items)
 
     def recommend(self, **kwargs):
         return self.student.recommend(**kwargs)

@@ -6,6 +6,7 @@ import freerec
 class CoachForBPRMF(freerec.launcher.GenCoach):
 
     def train_per_epoch(self, epoch: int):
+        self.model.anneal_T(epoch)
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
             logits_s, htd_loss = self.model.predict(users, positives, negatives)
@@ -21,6 +22,7 @@ class CoachForBPRMF(freerec.launcher.GenCoach):
 class CoachForGRU4Rec(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
+        self.model.anneal_T(epoch)
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
             logits_s, htd_loss = self.model.predict(seqs, positives, negatives)
@@ -36,6 +38,7 @@ class CoachForGRU4Rec(freerec.launcher.SeqCoach):
 class CoachForSASRec(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
+        self.model.anneal_T(epoch)
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
             logits_s, htd_loss = self.model.predict(seqs, positives, negatives)
