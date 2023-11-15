@@ -12,7 +12,7 @@ from models import BPRMF, GRU4Rec, SASRec
 from coaches import CoachForBPRMF, CoachForGRU4Rec, CoachForSASRec
 from utils import load_datapipes
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.4.5')
 
 cfg = freerec.parser.Parser()
 
