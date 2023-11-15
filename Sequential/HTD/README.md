@@ -1,6 +1,6 @@
 
 
-# Ranking Distillation
+# Hierarchical Topology Distillation
 
 [[official-code](https://github.com/SeongKu-Kang/Topology_Distillation_KDD21)]
 

@@ -1,6 +1,6 @@
 
 
-# Ranking Distillation
+# Decoupled Knowledge Distillation
 
 [[official-code](https://github.com/megvii-research/mdistiller/blob/master/mdistiller/distillers/DKD.py)]
 

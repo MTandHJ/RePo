@@ -1,8 +1,6 @@
 
 
-# Ranking Distillation
-
-[[official-code](https://github.com/graytowne/rank_distill)]
+# Knowledge Distillation
 
 
 ## Usage
