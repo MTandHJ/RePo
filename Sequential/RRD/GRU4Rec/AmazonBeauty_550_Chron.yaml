@@ -1,0 +1,22 @@
+root: ../../data
+dataset: AmazonBeauty_550_Chron
+embedding_dim: 200
+ratio: 10
+path: ../GRU4Rec/Beauty-200
+model: GRU4Rec
+
+maxlen: 50
+num_gru_layers: 1
+dropout_rate: 0.5
+
+K: 40
+L: 40
+T: 10
+weight4soft: 0.5
+num_topks: 500
+
+epochs: 300
+batch_size: 512
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-4
