@@ -32,7 +32,7 @@ cfg.add_argument("--dropout-rate", type=float, default=0.2)
 # hyper-parameters for KD
 cfg.add_argument("--K", type=int, default=40, help="#interesting items")
 cfg.add_argument("--L", type=int, default=40, help="#uninteresting items")
-cfg.add_argument("--T", type=int, default=10, help="#temperature")
+cfg.add_argument("--T", type=float, default=10, help="#temperature")
 cfg.add_argument("--num-topks", type=int, default=500)
 cfg.add_argument("--weight4soft", type=float, default=0.001)
 
