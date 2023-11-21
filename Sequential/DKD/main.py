@@ -4,6 +4,7 @@ import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
@@ -31,7 +32,6 @@ cfg.add_argument("--dropout-rate", type=float, default=0.2)
 
 # hyper-parameters for KD
 cfg.add_argument("--temperature", type=float, default=1.)
-cfg.add_argument("--weight4dkd", type=float, default=1.)
 cfg.add_argument("--alpha", type=float, default=1.)
 cfg.add_argument("--beta", type=float, default=8.)
 
@@ -65,7 +65,7 @@ else:
     raise ValueError(f"Only 'MF' or 'GRU4Rec' or 'SASRec' is supported ...")
 
 
-class KD(freerec.models.RecSysArch):
+class DKD(freerec.models.RecSysArch):
 
     def __init__(self, fields: FieldModuleList) -> None:
         super().__init__()
@@ -112,24 +112,20 @@ class KD(freerec.models.RecSysArch):
         return self.student.recommend(**kwargs)
 
 
-def _get_gt_mask(logits, target):
-    target = target.reshape(-1)
-    mask = torch.zeros_like(logits).scatter_(1, target.unsqueeze(1), 1).bool()
+def _get_gt_mask(logits: torch.Tensor, target: torch.Tensor):
+    mask = F.one_hot(target, num_classes=logits.size(1))
+    return mask.bool()
+
+def _get_other_mask(logits: torch.Tensor, target: torch.Tensor):
+    target = target.view(-1, 1)
+    mask = torch.ones_like(logits).scatter(1, target, 0).bool()
     return mask
-
-
-def _get_other_mask(logits, target):
-    target = target.reshape(-1)
-    mask = torch.ones_like(logits).scatter_(1, target.unsqueeze(1), 0).bool()
-    return mask
-
 
 def cat_mask(t, mask1, mask2):
     t1 = (t * mask1).sum(1, keepdims=True)
     t2 = (t * mask2).sum(1, keepdims=True)
     rt = torch.cat([t1, t2], dim=1)
     return rt
-
 
 class DKDLoss(freerec.criterions.BaseCriterion):
 
@@ -159,7 +155,7 @@ class DKDLoss(freerec.criterions.BaseCriterion):
         pred_teacher = cat_mask(pred_teacher, gt_mask, other_mask)
         log_pred_student = torch.log(pred_student)
         tckd_loss = (
-            F.kl_div(log_pred_student, pred_teacher, size_average=False)
+            F.kl_div(log_pred_student, pred_teacher, reduction='sum')
             * (self.temperature**2)
             / target.shape[0]
         )
@@ -170,7 +166,7 @@ class DKDLoss(freerec.criterions.BaseCriterion):
             logits_s / self.temperature - 1000.0 * gt_mask, dim=1
         )
         nckd_loss = (
-            F.kl_div(log_pred_student_part2, pred_teacher_part2, size_average=False)
+            F.kl_div(log_pred_student_part2, pred_teacher_part2, reduction='sum')
             * (self.temperature**2)
             / target.shape[0]
         )
@@ -184,28 +180,26 @@ class BPR_DKD_Loss(freerec.criterions.BaseCriterion):
         alpha: float = 1.,
         beta: float = 8.,
         temperature: float = 1.,
-        weight4dkd: float = 1.
     ) -> None:
         super().__init__()
 
         self.main_loss = freerec.criterions.BPRLoss('mean')
         self.dkd_loss = DKDLoss(alpha, beta, temperature)
-        self.weight4dkd = weight4dkd
 
     def forward(
         self, logits_s: torch.Tensor, positives: torch.Tensor,
         logits_full_s: torch.Tensor, logits_full_t: torch.Tensor
     ):
         hard_loss = self.main_loss(logits_s[:, 0], logits_s[:, 1])
-        soft_loss = self.kdiv_loss(logits_full_s, logits_full_t, positives)
-        return hard_loss + self.weight4dkd * soft_loss
+        soft_loss = self.dkd_loss(logits_full_s, logits_full_t, positives)
+        return hard_loss + soft_loss
 
 
 def main():
 
     dataset, trainpipe, validpipe, testpipe = load_datapipes(cfg)
     tokenizer = FieldModuleList(dataset.fields)
-    model = KD(tokenizer)
+    model = DKD(tokenizer)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
@@ -220,7 +214,7 @@ def main():
             betas=(cfg.beta1, cfg.beta2),
             weight_decay=cfg.weight_decay
         )
-    criterion = KDLoss(cfg.temperature, cfg.weight4soft)
+    criterion = BPR_DKD_Loss(cfg.alpha, cfg.beta, cfg.temperature)
 
     coach = COACH(
         trainpipe=trainpipe,

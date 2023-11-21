@@ -7,13 +7,14 @@ model: GRU4Rec
 
 maxlen: 50
 num_gru_layers: 1
-dropout_rate: 0.5
+dropout_rate: 0.3
 
-temperature: 5.
-weight4soft: 0.1
+temperature: 1.
+alpha: 5.
+beta: 1.
 
 epochs: 300
 batch_size: 512
 optimizer: adam
-lr: 1.e-3
-weight_decay: 1.e-4
+lr: 5.e-4
+weight_decay: 1.e-6

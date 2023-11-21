@@ -9,7 +9,10 @@ class CoachForBPRMF(freerec.launcher.GenCoach):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
             logits_s, logits_full_s, logits_full_t = self.model.predict(users, positives, negatives)
-            loss = self.criterion(logits_s, positives.flatten(), logits_full_s, logits_full_t)
+            loss = self.criterion(
+                logits_s, positives.flatten() - self.cfg.NUM_PADS,
+                logits_full_s, logits_full_t
+            )
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -24,7 +27,10 @@ class CoachForGRU4Rec(freerec.launcher.SeqCoach):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
             logits_s, logits_full_s, logits_full_t = self.model.predict(seqs, positives, negatives)
-            loss = self.criterion(logits_s, positives.flatten(), logits_full_s, logits_full_t)
+            loss = self.criterion(
+                logits_s, positives.flatten() - self.cfg.NUM_PADS, 
+                logits_full_s, logits_full_t
+            )
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -44,7 +50,10 @@ class CoachForSASRec(freerec.launcher.SeqCoach):
             logits_s = logits_s[indices]
             logits_full_s = logits_full_s[indices]
             logits_full_t = logits_full_t[indices]
-            loss = self.criterion(logits_s, positives, logits_full_s, logits_full_t)
+            loss = self.criterion(
+                logits_s, positives - self.cfg.NUM_PADS, 
+                logits_full_s, logits_full_t
+            )
 
             self.optimizer.zero_grad()
             loss.backward()

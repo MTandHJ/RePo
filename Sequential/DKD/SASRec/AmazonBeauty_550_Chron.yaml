@@ -2,16 +2,17 @@ root: ../../data
 dataset: AmazonBeauty_550_Chron
 embedding_dim: 200
 ratio: 10
-path: ../SASRec-BPR/Beauty-200/Beauty-200/AmazonBeauty_550_Chron/0-1108145148
+path: ../SASRec-BPR/Beauty-200
 model: SASRec
 
 maxlen: 50
 num_heads: 1
 num_blocks: 2
-dropout_rate: 0.2
+dropout_rate: 0.1
 
-temperature: 5.
-weight4soft: 0.5
+temperature: 1.
+alpha: 1.
+beta: 500
 
 epochs: 500
 batch_size: 512
