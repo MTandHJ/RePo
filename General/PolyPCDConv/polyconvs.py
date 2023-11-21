@@ -42,6 +42,8 @@ class PolyPCDConv(nn.Module):
         beta: float = 1.,
         fixed: bool = False
     ):
+        super().__init__()
+
         self.L = L
         self.scaling_factor = scaling_factor
 
