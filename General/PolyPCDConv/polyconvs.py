@@ -168,7 +168,7 @@ def jacobi_conv(
 
     if l == 1:
         c = (alpha - beta) / 2
-        return c + (alpha + beta + 2) / 2 * zs[-1]
+        return c * zs[-1] + (alpha + beta + 2) / 2 * matmul(A, zs[-1], reduce='sum')
     else:
         c0 = 2 * l \
                 * (l + alpha + beta) \
