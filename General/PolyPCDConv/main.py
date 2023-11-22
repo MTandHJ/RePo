@@ -124,12 +124,6 @@ class PolyPCDGCN(freerec.models.RecSysArch):
 
 class CoachForPolyPCD(freerec.launcher.GenCoach):
 
-    def reg_loss(self, userEmbds, itemEmbds):
-        userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
-        loss = loss / userEmbds.size(0)
-        return loss / 2
-
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
@@ -138,8 +132,7 @@ class CoachForPolyPCD(freerec.launcher.GenCoach):
             )
             scores, users, items = self.model.predict(users, items)
             pos, neg = scores[:, 0], scores[:, 1]
-            reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
-            loss = self.criterion(pos, neg) + reg_loss
+            loss = self.criterion(pos, neg)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -178,12 +171,14 @@ def main():
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
             model.parameters(), lr=cfg.lr, 
+            weight_decay=cfg.weight_decay,
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), lr=cfg.lr,
+            weight_decay=cfg.weight_decay,
             betas=(cfg.beta1, cfg.beta2),
         )
     criterion = freerec.criterions.BPRLoss()
