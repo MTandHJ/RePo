@@ -11,12 +11,11 @@ from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_sparse import matmul
 from functools import partial
 
-
 import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.4.5')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -25,6 +24,7 @@ cfg.add_argument("--layers", type=int, default=3)
 cfg.add_argument("--scaling-factor", type=float, default=3., help="hyper-parameter for rescaling")
 cfg.add_argument("--alpha", type=float, default=1., help="hyper-parameter for Jacobi Polynomial")
 cfg.add_argument("--beta", type=float, default=1., help="hyper-parameter for Jacobi Polynomial")
+cfg.add_argument("--weight4mid", type=float, default=0.1, help="weight for scaling mid")
 
 cfg.set_defaults(
     description="JGCF",
@@ -38,8 +38,6 @@ cfg.set_defaults(
     seed=1
 )
 cfg.compile()
-
-
 
 
 def jacobi_conv(
@@ -83,7 +81,6 @@ def jacobi_conv(
 
         return (part1 + part2 - part3) / c0
 
-
 class JacobiConv(nn.Module):
 
     def __init__(
@@ -126,9 +123,11 @@ class JGCF(freerec.models.RecSysArch):
     ) -> None:
         super().__init__()
 
+        self.weight4mid = cfg.weight4mid
+
         self.fields = fields
         self.conv = JacobiConv(
-            scaling_factor=3, L=cfg.layers, 
+            scaling_factor=cfg.scaling_factor, L=cfg.layers, 
             alpha=cfg.alpha, beta=cfg.beta
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
@@ -242,7 +241,7 @@ def main():
         cfg.embedding_dim, ID
     )
     model = JGCF(
-        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID)), num_layers=cfg.layers
+        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID))
     )
 
     if cfg.optimizer == 'sgd':
