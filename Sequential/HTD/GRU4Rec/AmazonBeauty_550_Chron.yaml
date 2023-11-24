@@ -6,14 +6,18 @@ path: ../GRU4Rec/Beauty-200
 model: GRU4Rec
 
 maxlen: 50
-num_gru_layers: 1
-dropout_rate: 0.5
+num_heads: 1
+num_blocks: 2
+dropout_rate: 0.2
 
-temperature: 5.
-weight4soft: 0.1
+similarity: cosine
+topology: group2group
+weight4htd: 1.e-2
+gamma: 0.5
+K: 30
 
-epochs: 300
-batch_size: 512
+epochs: 200
+batch_size: 128
 optimizer: adam
 lr: 1.e-3
 weight_decay: 1.e-4
