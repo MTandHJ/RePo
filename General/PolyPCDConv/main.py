@@ -43,7 +43,7 @@ cfg.compile()
 if cfg.is_fixed == 'True':
     cfg.is_fixed = True
 elif cfg.is_fixed == 'False':
-    cfg.is_fixed = None
+    cfg.is_fixed = False
 else:
     raise ValueError("'is_fixed' should be 'True' or 'False'")
 
