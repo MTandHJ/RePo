@@ -7,7 +7,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.5.1')
+freerec.declare(version='0.4.3')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
@@ -169,8 +169,8 @@ class SASRec(freerec.models.RecSysArch):
         seqs: torch.Tensor,
     ):
         features = self.forward(seqs)
-        items = self.Item.embeddings.weight # (N + 1, D)
-        return features.matmul(items.t()) # (B, N + 1)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        return features.matmul(items.t()) # (B, N)
 
     def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
         features = self.forward(seqs)[:, [-1], :]  # (B, 1, D)
@@ -214,7 +214,7 @@ def main():
     ).lprune_(
         indices=[1, 2], maxlen=cfg.maxlen
     ).add_(
-        indices=[1, 2], offset=NUM_PADS
+        indices=[1], offset=NUM_PADS
     ).lpad_(
         indices=[1, 2], maxlen=cfg.maxlen, padding_value=0
     ).batch(cfg.batch_size).column_().tensor_()
