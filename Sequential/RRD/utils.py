@@ -17,7 +17,7 @@ def load_datapipes(cfg):
         trainpipe = freerec.data.postprocessing.source.RandomIDs(
             field=User, datasize=dataset.train().datasize
         ).sharding_filter().gen_train_uniform_sampling_(
-            dataset, num_negatives=1
+            dataset, num_negatives=cfg.L
         ).batch(cfg.batch_size).column_().tensor_()
 
         validpipe = freerec.data.dataloader.load_gen_validpipe(
@@ -31,10 +31,10 @@ def load_datapipes(cfg):
         trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
             source=dataset.train().to_roll_seqs(minlen=2)
         ).sharding_filter().seq_train_uniform_sampling_(
-            dataset, leave_one_out=True # yielding (users, seqs, positives, negatives)
+            dataset, leave_one_out=True, num_negatives=cfg.L # yielding (users, seqs, positives, negatives)
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen,
-        ).rshift_(
+        ).add_(
             indices=[1, 2, 3], offset=cfg.NUM_PADS
         ).batch(cfg.batch_size).column_().rpad_col_(
             indices=[1], maxlen=None, padding_value=0
@@ -55,10 +55,10 @@ def load_datapipes(cfg):
         trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
             source=dataset.train().to_seqs(keepid=True)
         ).sharding_filter().seq_train_uniform_sampling_(
-            dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
+            dataset, leave_one_out=False, num_negatives=cfg.L # yielding (user, seqs, targets, negatives)
         ).lprune_(
             indices=[1, 2, 3], maxlen=cfg.maxlen
-        ).rshift_(
+        ).add_(
             indices=[1, 2, 3], offset=cfg.NUM_PADS
         ).lpad_(
             indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0

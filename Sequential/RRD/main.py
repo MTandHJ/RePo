@@ -12,7 +12,7 @@ from models import BPRMF, GRU4Rec, SASRec
 from coaches import CoachForBPRMF, CoachForGRU4Rec, CoachForSASRec
 from utils import load_datapipes
 
-freerec.declare(version='0.4.5')
+freerec.declare(version='0.5.1')
 
 cfg = freerec.parser.Parser()
 
@@ -100,11 +100,6 @@ class RRD(freerec.models.RecSysArch):
         _, topks = logits_full_t.topk(NUM_TOPKS, dim=-1, largest=True, sorted=True)
         return topks.gather(1, indices) + cfg.NUM_PADS
 
-    @torch.no_grad()
-    def sampling_uninteresting(self, logits_full_t: torch.Tensor):
-        size = (len(logits_full_t), cfg.L)
-        return torch.randint(cfg.NUM_PADS, self.num_items + cfg.NUM_PADS, size=size, device=self.device)
-
     def predict(
         self, 
         users: torch.Tensor,
@@ -119,10 +114,10 @@ class RRD(freerec.models.RecSysArch):
             - (B, 1): users for MF
             - (B, S): seqs for GRU4Rec or SASRec
         negatives: (B, *)
-            - (B, 1): users for MF
-            - (B, S): seqs for GRU4Rec or SASRec
+            - (B, 1, L): users for MF
+            - (B, S, L): seqs for GRU4Rec or SASRec
         """
-        items = torch.stack((positives, negatives), dim=-1) # (B, *, 2)
+        items = torch.stack((positives, negatives[..., 0]), dim=-1) # (B, *, 2)
         userFeats_s = self.student(users).unsqueeze(-2).flatten(end_dim=-3) # (B x *, 1, D)
         itemFeats_s = self.student.Item.look_up(items).flatten(end_dim=-3) # (B x *, 2, D)
         logits_s = userFeats_s.mul(itemFeats_s).sum(-1) # (B x *, 2)
@@ -131,7 +126,7 @@ class RRD(freerec.models.RecSysArch):
             logits_full_t = userFeats_t @ self.teacher.Item.embeddings.weight[cfg.NUM_PADS:].t() # (B, *, 1, N)
             logits_full_t = logits_full_t.flatten(end_dim=-2) # (B x *, N)
         interesting_items = self.sampling_interesting(logits_full_t) # (B x *, K)
-        uninteresting_items = self.sampling_uninteresting(logits_full_t) # (B x *, L)
+        uninteresting_items = negatives.flatten(end_dim=-2) # (B x *, L)
         logits_i = userFeats_s.mul(self.student.Item.look_up(interesting_items)).sum(-1)
         logits_u = userFeats_s.mul(self.student.Item.look_up(uninteresting_items)).sum(-1)
         # (B x *, 2/N)
