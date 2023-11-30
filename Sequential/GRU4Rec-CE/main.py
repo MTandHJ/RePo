@@ -79,14 +79,11 @@ class GRU4Rec(freerec.models.RecSysArch):
 
     def predict(
         self, 
-        seqs: torch.Tensor, 
-        positives: torch.Tensor, 
-        negatives:torch.Tensor
+        seqs: torch.Tensor
     ):
         features = self.forward(seqs)
-        posEmbds = self.Item.look_up(positives).squeeze(1) # (B, D)
-        negEmbds = self.Item.look_up(negatives).squeeze(1) # (B, D)
-        return features.mul(posEmbds).sum(-1), features.mul(negEmbds).sum(-1)
+        items = self.Item.embeddings.weight[NUM_PADS:] # (N, D)
+        return features.matmul(items.t())
 
     def recommend_from_pool(self, seqs: torch.Tensor, pool: torch.Tensor):
         features = self.forward(seqs).unsqueeze(1) # (B, 1, D)
@@ -103,9 +100,9 @@ class CoachForGRU4Rec(freerec.launcher.SeqCoach):
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
-            users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            pos, neg = self.model.predict(seqs, positives, negatives.squeeze(-1))
-            loss = self.criterion(pos, neg)
+            users, seqs, targets = [col.to(self.device) for col in data]
+            logits = self.model.predict(seqs)
+            loss = self.criterion(logits, targets.flatten())
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -122,12 +119,12 @@ def main():
     # trainpipe
     trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
         source=dataset.train().to_roll_seqs(minlen=2)
-    ).sharding_filter().seq_train_uniform_sampling_(
-        dataset, leave_one_out=True # yielding (users, seqs, positives, negatives)
+    ).sharding_filter().seq_train_yielding_(
+        dataset, leave_one_out=True # yielding (users, seqs, positives)
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen,
     ).add_(
-        indices=[1, 2, 3], offset=NUM_PADS
+        indices=[1], offset=NUM_PADS
     ).batch(cfg.batch_size).column_().rpad_col_(
         indices=[1], maxlen=None, padding_value=0
     ).tensor_()
@@ -171,7 +168,7 @@ def main():
             weight_decay=cfg.weight_decay
         )
 
-    criterion = freerec.criterions.BPRLoss()
+    criterion = freerec.criterions.CrossEntropy4Logits()
 
     coach = CoachForGRU4Rec(
         trainpipe=trainpipe,

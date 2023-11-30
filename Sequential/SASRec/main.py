@@ -7,7 +7,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.5.1')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=50)
@@ -191,7 +191,7 @@ class CoachForSASRec(freerec.launcher.SeqCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            posLogits, negLogits = self.model.predict(seqs, positives, negatives)
+            posLogits, negLogits = self.model.predict(seqs, positives, negatives.squeeze(-1))
             posLabels = torch.ones_like(posLogits)
             negLabels = torch.zeros_like(negLogits)
             indices = positives != 0
@@ -217,7 +217,7 @@ def main():
         dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
-    ).rshift_(
+    ).add_(
         indices=[1, 2, 3], offset=NUM_PADS
     ).lpad_(
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
