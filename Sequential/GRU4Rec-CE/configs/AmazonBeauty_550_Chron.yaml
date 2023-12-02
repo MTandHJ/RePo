@@ -1,11 +1,11 @@
 dataset: AmazonBeauty_550_Chron
 root: ../../data
 maxlen: 50
-epochs: 300
+epochs: 200
 batch_size: 512
-lr: 1.e-3
-weight_decay: 1.e-8
+lr: 5.e-4
+weight_decay: 1.e-6
 embedding_dim: 64
 hidden_size: 64
-emb_dropout_rate: 0.3
+emb_dropout_rate: 0.5
 num_gru_layers: 1
