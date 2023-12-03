@@ -27,7 +27,7 @@ cfg.add_argument("--beta", type=float, default=1., help="hyper-parameter for Jac
 cfg.add_argument("--is-fixed", type=str, default='False', help="Learnable coefficients if False")
 
 cfg.set_defaults(
-    description="LightGCN",
+    description="PolyPCDGCN",
     root="../../data",
     dataset='Gowalla_10100811_Chron',
     epochs=1000,
