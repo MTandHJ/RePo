@@ -34,7 +34,7 @@ def load_datapipes(cfg):
             dataset, leave_one_out=True # yielding (users, seqs, positives, negatives)
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen,
-        ).rshift_(
+        ).add_(
             indices=[1, 2, 3], offset=cfg.NUM_PADS
         ).batch(cfg.batch_size).column_().rpad_col_(
             indices=[1], maxlen=None, padding_value=0
@@ -58,7 +58,7 @@ def load_datapipes(cfg):
             dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
         ).lprune_(
             indices=[1, 2, 3], maxlen=cfg.maxlen
-        ).rshift_(
+        ).add_(
             indices=[1, 2, 3], offset=cfg.NUM_PADS
         ).lpad_(
             indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0

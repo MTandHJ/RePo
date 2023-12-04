@@ -26,7 +26,7 @@ class CoachForGRU4Rec(freerec.launcher.SeqCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            logits_s, logits_full_s, logits_full_t = self.model.predict(seqs, positives, negatives)
+            logits_s, logits_full_s, logits_full_t = self.model.predict(seqs, positives, negatives.squeeze(-1))
             loss = self.criterion(
                 logits_s, positives.flatten() - self.cfg.NUM_PADS, 
                 logits_full_s, logits_full_t
@@ -44,7 +44,7 @@ class CoachForSASRec(freerec.launcher.SeqCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            logits_s, logits_full_s, logits_full_t = self.model.predict(seqs, positives, negatives)
+            logits_s, logits_full_s, logits_full_t = self.model.predict(seqs, positives, negatives.squeeze(-1))
             indices = positives.flatten() != 0
             positives = positives.flatten()[indices]
             logits_s = logits_s[indices]
