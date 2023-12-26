@@ -147,14 +147,15 @@ class CoachForFMLP(freerec.launcher.SeqCoach):
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
 
-def to_roll_seqs(dataset: freerec.data.datasets.RecDataSet, minlen: int = 1):
+def to_roll_seqs(dataset: freerec.data.datasets.RecDataSet, minlen: int = 2):
     seqs = dataset.to_seqs(keepid=True)
 
     roll_seqs = []
     for id_, items in seqs:
+        items = items[-cfg.maxlen:]
         for k in range(minlen, len(items) + 1):
             roll_seqs.append(
-                (id_, items[-cfg.maxlen:k])
+                (id_, items[:k])
             )
 
     return roll_seqs
