@@ -151,7 +151,7 @@ def main():
         source=dataset.train().to_seqs(keepid=True)
     ).sharding_filter().lprune_(
         indices=[1], maxlen=cfg.maxlen
-    ).rshift_(
+    ).add_(
         indices=[1], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0 # 0: padding; 1: mask token
