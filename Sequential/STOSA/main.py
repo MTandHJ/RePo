@@ -10,7 +10,7 @@ from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
 from modules import LayerNorm, DistSAEncoder, wasserstein_distance, kl_distance
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.5.1')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=100)
@@ -208,7 +208,7 @@ class CoachForSTOSA(freerec.launcher.SeqCoach):
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, seqs, positives, negatives = [col.to(self.device) for col in data]
-            posLogits, negLogits, pvnLogits = self.model.predict(seqs, positives, negatives)
+            posLogits, negLogits, pvnLogits = self.model.predict(seqs, positives, negatives.squeeze(-1))
             indices = positives != 0
             loss = self.criterion(posLogits[indices], negLogits[indices])
             loss += self.pvn_loss(posLogits[indices], pvnLogits[indices]) * self.cfg.pvn_weight
@@ -232,7 +232,7 @@ def main():
         dataset, leave_one_out=False # yielding (user, seqs, targets, negatives)
     ).lprune_(
         indices=[1, 2, 3], maxlen=cfg.maxlen
-    ).rshift_(
+    ).add_(
         indices=[1, 2, 3], offset=NUM_PADS
     ).lpad_(
         indices=[1, 2, 3], maxlen=cfg.maxlen, padding_value=0
