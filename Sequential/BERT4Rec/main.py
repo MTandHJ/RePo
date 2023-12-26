@@ -138,6 +138,8 @@ class CoachForBERT4Rec(freerec.launcher.SeqCoach):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+
+            self.lr_scheduler.step()
             
             self.monitor(loss.item(), n=users.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
