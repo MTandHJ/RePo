@@ -7,7 +7,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID, POSITIVE, UNSEEN, SEEN
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.5.1')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=100)
@@ -165,7 +165,7 @@ def main():
             dataset
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen - 1,
-        ).rshift_(
+        ).add_(
             indices=[1], offset=NUM_PADS
         ).lpad_(
             indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
@@ -181,7 +181,7 @@ def main():
             dataset # yielding (user, items, (target + (100) negatives))
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen - 1,
-        ).rshift_(
+        ).add_(
             indices=[1, 2], offset=NUM_PADS
         ).lpad_(
             indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
@@ -197,7 +197,7 @@ def main():
             dataset
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen - 1,
-        ).rshift_(
+        ).add_(
             indices=[1], offset=NUM_PADS
         ).lpad_(
             indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
@@ -213,7 +213,7 @@ def main():
             dataset # yielding (user, items, (target + (100) negatives))
         ).lprune_(
             indices=[1], maxlen=cfg.maxlen - 1,
-        ).rshift_(
+        ).add_(
             indices=[1, 2], offset=NUM_PADS
         ).lpad_(
             indices=[1], maxlen=cfg.maxlen - 1, padding_value=0
