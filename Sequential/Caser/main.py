@@ -1,5 +1,7 @@
 
 
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,8 +10,9 @@ import torchdata.datapipes as dp
 import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
+from freerec.data.utils import negsamp_vectorized_bsearch
 
-freerec.declare(version='0.4.3')
+freerec.declare(version='0.5.1')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("--maxlen", type=int, default=5)
@@ -157,13 +160,12 @@ class SeqSampler(freerec.data.postprocessing.sampler.SeqTrainUniformSampler):
 
         self.num_negatives = num_negatives
 
-    def _sample_neg(self, user: int):
+    def _sample_neg(self, user: int) -> List[int]:
         r"""Randomly sample negative items for a user.
 
         Parameters:
         ----------
-        user: int 
-            A user index.
+        user: int
 
         Returns:
         --------
@@ -171,11 +173,13 @@ class SeqSampler(freerec.data.postprocessing.sampler.SeqTrainUniformSampler):
             A list of negative items that the user has not interacted with.
         """
         seen = self.posItems[user]
-        return self.listmap(self._sample_from_pool, [seen] * self.num_negatives)
+        return negsamp_vectorized_bsearch(
+            seen, self.Item.count, self.num_negatives
+        )
 
     def __iter__(self):
         for user, sequence in self.source:
-            if len(sequence) < cfg.num_poss:
+            if len(sequence) <= cfg.num_poss:
                 continue
             positives = sequence[-cfg.num_poss:]
             seen = sequence[:-cfg.num_poss]
@@ -222,7 +226,7 @@ def main():
         dataset, num_negatives=cfg.num_negs # yielding (user, seqs, targets, negatives)
     ).lprune_(
         indices=[1], maxlen=cfg.maxlen
-    ).rshift_(
+    ).add_(
         indices=[1, 2, 3], offset=NUM_PADS
     ).lpad_(
         indices=[1], maxlen=cfg.maxlen, padding_value=0
