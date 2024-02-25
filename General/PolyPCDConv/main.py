@@ -14,7 +14,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.4.5')
+freerec.declare(version='0.6.3')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -24,7 +24,7 @@ cfg.add_argument("--poly-base", type=str, default='Jacobi', help="Polynomial bas
 cfg.add_argument("--scaling-factor", type=float, default=1., help="hyper-parameter for scaling")
 cfg.add_argument("--alpha", type=float, default=1., help="hyper-parameter for Jacobi bases")
 cfg.add_argument("--beta", type=float, default=1., help="hyper-parameter for Jacobi bases")
-cfg.add_argument("--is-fixed", type=str, default='False', help="Learnable coefficients if False")
+cfg.add_argument("--is-fixed", action="store_true", default=False, help="Learnable coefficients if False")
 
 cfg.set_defaults(
     description="PolyPCDGCN",
@@ -38,14 +38,6 @@ cfg.set_defaults(
     seed=1
 )
 cfg.compile()
-
-
-if cfg.is_fixed == 'True':
-    cfg.is_fixed = True
-elif cfg.is_fixed == 'False':
-    cfg.is_fixed = False
-else:
-    raise ValueError("'is_fixed' should be 'True' or 'False'")
 
 
 class PolyPCDGCN(freerec.models.RecSysArch):
@@ -184,10 +176,10 @@ def main():
     criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForPolyPCD(
+        dataset=dataset,
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
-        fields=dataset.fields,
         model=model,
         criterion=criterion,
         optimizer=optimizer,

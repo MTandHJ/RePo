@@ -11,4 +11,4 @@ poly_base: Jacobi
 scaling_factor: 1.
 alpha: 2
 beta: 2.
-is_fixed: 'False'
+is_fixed: False
