@@ -101,7 +101,7 @@ class GPRGNN(freerec.models.RecSysArch):
         for _ in range(self.num_layers):
             features = self.conv(features, self.graph.adj_t)
             allFeats.append(features)
-        allFeats = torch.cat(allFeats, dim=-1) # (B, D, L + 1)
+        allFeats = torch.stack(allFeats, dim=-1) # (B, D, L + 1)
         avgFeats = torch.einsum('BDL,L->BD', [allFeats, self.temp])
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
@@ -110,9 +110,7 @@ class GPRGNN(freerec.models.RecSysArch):
         userFeats, itemFeats = self.forward()
         userFeats = userFeats[users] # B x 1 x D
         itemFeats = itemFeats[items] # B x n x D
-        userEmbs = self.User.look_up(users) # B x 1 x D
-        itemEmbs = self.Item.look_up(items) # B x n x D
-        return torch.mul(userFeats, itemFeats).sum(-1), userEmbs, itemEmbs
+        return torch.mul(userFeats, itemFeats).sum(-1)
 
     def recommend_from_full(self):
         return self.forward()
@@ -120,22 +118,15 @@ class GPRGNN(freerec.models.RecSysArch):
 
 class CoachForGPRGNN(freerec.launcher.GenCoach):
 
-    def reg_loss(self, userEmbds, itemEmbds):
-        userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
-        loss = loss / userEmbds.size(0)
-        return loss / 2
-
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
             users, positives, negatives = [col.to(self.device) for col in data]
             items = torch.cat(
                 [positives, negatives], dim=1
             )
-            scores, users, items = self.model.predict(users, items)
+            scores = self.model.predict(users, items)
             pos, neg = scores[:, 0], scores[:, 1]
-            reg_loss = self.reg_loss(users.flatten(1), items.flatten(1)) * self.cfg.weight_decay
-            loss = self.criterion(pos, neg) + reg_loss
+            loss = self.criterion(pos, neg)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -176,11 +167,13 @@ def main():
             model.parameters(), lr=cfg.lr, 
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
+            weight_decay=cfg.weight_decay
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), lr=cfg.lr,
             betas=(cfg.beta1, cfg.beta2),
+            weight_decay=cfg.weight_decay
         )
     criterion = freerec.criterions.BPRLoss()
 
