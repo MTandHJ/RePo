@@ -4,6 +4,7 @@ from typing import Dict, Optional, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
@@ -102,7 +103,7 @@ class GPRGNN(freerec.models.RecSysArch):
             features = self.conv(features, self.graph.adj_t)
             allFeats.append(features)
         allFeats = torch.stack(allFeats, dim=-1) # (B, D, L + 1)
-        avgFeats = torch.einsum('BDL,L->BD', [allFeats, self.temp])
+        avgFeats = torch.einsum('BDL,L->BD', [allFeats, F.tanh(self.temp)])
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
 
