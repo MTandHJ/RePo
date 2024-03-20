@@ -272,8 +272,9 @@ def main():
         cfg, 
         monitors=[
             'loss', 
-            'hitrate@1', 'hitrate@5', 'hitrate@10',
-            'ndcg@5', 'ndcg@10'
+            'recall@10', 'recall@20', 
+            'precision@10', 'precision@20', 
+            'ndcg@10', 'ndcg@20'
         ],
         which4best='ndcg@10'
     )

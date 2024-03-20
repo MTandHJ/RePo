@@ -2,7 +2,7 @@
 
 # MMGCN
 
-[[official-code](https://github.com/kang205/SASRec)]
+[[official-code](https://github.com/weiyinwei/MMGCN)]
 
 
 ## Usage
