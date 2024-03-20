@@ -258,10 +258,10 @@ def main():
     criterion = freerec.criterions.BCELoss4Logits()
 
     coach = CoachForSASRec(
+        dataset=dataset,
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
-        fields=dataset.fields,
         model=model,
         criterion=criterion,
         optimizer=optimizer,

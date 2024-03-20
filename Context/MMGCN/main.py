@@ -125,11 +125,10 @@ class MMGCN(freerec.models.RecSysArch):
 
         self.fields = fields
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.vFeats = self.tFeats = None
         self.load_feats(data_path)
 
         self.num_modality = 0
-        if self.vFeats:
+        if self.vFeats is not None:
             self.vGCN = GraphConvNet(
                 self.User.count,
                 feature_dim=256, # 256 indicates the hidden size of visual features
@@ -140,7 +139,7 @@ class MMGCN(freerec.models.RecSysArch):
             self.vProjector = nn.Linear(self.vFeats.size(1), 256)
             self.num_modality += 1
 
-        if self.tFeats:
+        if self.tFeats is not None:
             self.tGCN = GraphConvNet(
                 self.User.count,
                 feature_dim=self.tFeats.size(1),
@@ -163,12 +162,16 @@ class MMGCN(freerec.models.RecSysArch):
                     os.path.join(path, cfg.visual_file)
                 )
             )
+        else:
+            self.vFeats = None
         if cfg.textual_file:
             self.register_buffer(
                 "tFeats", import_pickle(
                     os.path.join(path, cfg.textual_file)
                 )
             )
+        else:
+            self.tFeats = None
 
     def reset_parameters(self):
         for m in self.modules():
@@ -204,13 +207,13 @@ class MMGCN(freerec.models.RecSysArch):
         itemEmbs = self.Item.embeddings.weight
         idEmbds = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
 
-        if self.vFeats:
+        if self.vFeats is not None:
             vEmbds = self.vGCN(
                 self.vProjector(self.vFeats), idEmbds, self.graph.edge_index
             )
         else:
             vEmbds = 0
-        if self.tFeats:
+        if self.tFeats is not None:
             tEmbds = self.tGCN(
                 self.tFeats, idEmbds, self.graph.edge_index
             )
