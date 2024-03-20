@@ -1,0 +1,13 @@
+root: ../../data
+dataset: Amazon2023_Toys_10100_Chron
+embedding_dim: 64
+num_layers: 3
+epochs: 500
+batch_size: 1024
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-4
+fusion_mode: cat
+
+visual_file: visual_modality.pkl
+textual_file: textual_modality.pkl

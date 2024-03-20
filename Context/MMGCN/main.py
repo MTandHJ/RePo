@@ -18,11 +18,11 @@ freerec.declare(version="0.7.3")
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
-cfg.add_argument("--layers", type=int, default=3)
+cfg.add_argument("--num-layers", type=int, default=3)
 cfg.add_argument("--fusion-mode", type=str, choices=('cat', 'add'), default="cat")
 
-cfg.add_argument("--mPath", type=str, default="./Modality")
-cfg.add_argument("--mFile", type=str, default="feats.pkl")
+cfg.add_argument("--visual_file", type=str, default="visual_modality.pkl")
+cfg.add_argument("--textual_file", type=str, default="textual_modality.pkl")
 
 
 cfg.set_defaults(
@@ -119,48 +119,56 @@ class GraphConvNet(MessagePassing):
 class MMGCN(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, graph: Data,
+        self, fields: FieldModuleList, data_path: str, graph: Data,
     ) -> None:
         super().__init__()
 
         self.fields = fields
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.load_feats(
-            os.path.join(
-                cfg.mPath, cfg.dataset, cfg.mFile
+        self.vFeats = self.tFeats = None
+        self.load_feats(data_path)
+
+        self.num_modality = 0
+        if self.vFeats:
+            self.vGCN = GraphConvNet(
+                self.User.count,
+                feature_dim=256, # 256 indicates the hidden size of visual features
+                embedding_dim=cfg.embedding_dim,
+                fusion_mode=cfg.fusion_mode,
+                num_layers=cfg.num_layers,
             )
-        )
+            self.vProjector = nn.Linear(self.vFeats.size(1), 256)
+            self.num_modality += 1
 
-        self.vGCN = GraphConvNet(
-            self.User.count,
-            feature_dim=256, # 256 indicates the hidden size of visual features
-            embedding_dim=cfg.embedding_dim,
-            fusion_mode=cfg.fusion_mode,
-            num_layers=cfg.num_layers,
-        )
-        self.vProjector = nn.Linear(self.vFeat.size(1), 256)
-
-        self.tGCN = GraphConvNet(
-            self.User.count,
-            feature_dim=self.tFeat.size(1),
-            embedding_dim=cfg.embedding_dim,
-            fusion_mode=cfg.fusion_mode,
-            num_layers=cfg.num_layers,
-        )
+        if self.tFeats:
+            self.tGCN = GraphConvNet(
+                self.User.count,
+                feature_dim=self.tFeats.size(1),
+                embedding_dim=cfg.embedding_dim,
+                fusion_mode=cfg.fusion_mode,
+                num_layers=cfg.num_layers,
+            )
+            self.num_modality += 1
+        assert self.num_modality > 0
 
         self.graph = graph
 
         self.reset_parameters()
 
-    def load_feats(self, file_: str):
+    def load_feats(self, path: str):
         from freeplot.utils import import_pickle
-        data: dict = import_pickle(file_)
-        self.register_buffer(
-            "vFeat", data['vFeat']
-        )
-        self.register_buffer(
-            "tFeat", data["tFeat"]
-        )
+        if cfg.visual_file:
+            self.register_buffer(
+                "vFeats", import_pickle(
+                    os.path.join(path, cfg.visual_file)
+                )
+            )
+        if cfg.textual_file:
+            self.register_buffer(
+                "tFeats", import_pickle(
+                    os.path.join(path, cfg.textual_file)
+                )
+            )
 
     def reset_parameters(self):
         for m in self.modules():
@@ -196,13 +204,19 @@ class MMGCN(freerec.models.RecSysArch):
         itemEmbs = self.Item.embeddings.weight
         idEmbds = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
 
-        vEmbds = self.vGCN(
-            self.vFeat, idEmbds, self.graph.edge_index
-        )
-        tEmbds = self.vGCN(
-            self.tFeat, idEmbds, self.graph.edge_index
-        )
-        avgFeats = (vEmbds + tEmbds) / 2
+        if self.vFeats:
+            vEmbds = self.vGCN(
+                self.vProjector(self.vFeats), idEmbds, self.graph.edge_index
+            )
+        else:
+            vEmbds = 0
+        if self.tFeats:
+            tEmbds = self.tGCN(
+                self.tFeats, idEmbds, self.graph.edge_index
+            )
+        else:
+            tEmbds = 0
+        avgFeats = (vEmbds + tEmbds) / self.num_modality
 
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
@@ -269,7 +283,7 @@ def main():
         cfg.embedding_dim, ID
     )
     model = MMGCN(
-        tokenizer, dataset.train().to_bigraph((USER, ID), (ITEM, ID))
+        tokenizer, dataset.path, dataset.train().to_graph((USER, ID), (ITEM, ID))
     )
 
     if cfg.optimizer == 'sgd':
@@ -286,10 +300,10 @@ def main():
     criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForMMGCN(
+        dataset=dataset,
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
-        fields=dataset.fields,
         model=model,
         criterion=criterion,
         optimizer=optimizer,
