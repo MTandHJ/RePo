@@ -21,8 +21,9 @@ cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-layers", type=int, default=3)
 cfg.add_argument("--fusion-mode", type=str, choices=('cat', 'add'), default="cat")
 
-cfg.add_argument("--visual_file", type=str, default="visual_modality.pkl")
-cfg.add_argument("--textual_file", type=str, default="textual_modality.pkl")
+cfg.add_argument("--afile", type=str, default=None, help="the file of acoustic modality features")
+cfg.add_argument("--vfile", type=str, default="visual_modality.pkl", help="the file of visual modality features")
+cfg.add_argument("--tfile", type=str, default="textual_modality.pkl", help="the file of textual modality features")
 
 
 cfg.set_defaults(
@@ -127,8 +128,7 @@ class MMGCN(freerec.models.RecSysArch):
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
         self.load_feats(data_path)
 
-        self.num_modality = 0
-        if self.vFeats is not None:
+        if cfg.vfile:
             self.vGCN = GraphConvNet(
                 self.User.count,
                 feature_dim=256, # 256 indicates the hidden size of visual features
@@ -137,9 +137,8 @@ class MMGCN(freerec.models.RecSysArch):
                 num_layers=cfg.num_layers,
             )
             self.vProjector = nn.Linear(self.vFeats.size(1), 256)
-            self.num_modality += 1
 
-        if self.tFeats is not None:
+        if cfg.tfile:
             self.tGCN = GraphConvNet(
                 self.User.count,
                 feature_dim=self.tFeats.size(1),
@@ -147,7 +146,17 @@ class MMGCN(freerec.models.RecSysArch):
                 fusion_mode=cfg.fusion_mode,
                 num_layers=cfg.num_layers,
             )
-            self.num_modality += 1
+
+        if cfg.afile:
+            self.aGCN = GraphConvNet(
+                self.User.count,
+                feature_dim=self.aFeats.size(1),
+                embedding_dim=cfg.embedding_dim,
+                fusion_mode=cfg.fusion_mode,
+                num_layers=cfg.num_layers,
+            )
+
+        self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
         assert self.num_modality > 0
 
         self.graph = graph
@@ -156,22 +165,24 @@ class MMGCN(freerec.models.RecSysArch):
 
     def load_feats(self, path: str):
         from freeplot.utils import import_pickle
-        if cfg.visual_file:
+        if cfg.vfile:
             self.register_buffer(
                 "vFeats", import_pickle(
-                    os.path.join(path, cfg.visual_file)
+                    os.path.join(path, cfg.vfile)
                 )
             )
-        else:
-            self.vFeats = None
-        if cfg.textual_file:
+        if cfg.tfile:
             self.register_buffer(
                 "tFeats", import_pickle(
-                    os.path.join(path, cfg.textual_file)
+                    os.path.join(path, cfg.tfile)
                 )
             )
-        else:
-            self.tFeats = None
+        if cfg.afile:
+            self.register_buffer(
+                "aFeats", import_pickle(
+                    os.path.join(path, cfg.afile)
+                )
+            )
 
     def reset_parameters(self):
         for m in self.modules():
@@ -207,19 +218,25 @@ class MMGCN(freerec.models.RecSysArch):
         itemEmbs = self.Item.embeddings.weight
         idEmbds = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
 
-        if self.vFeats is not None:
+        if cfg.vfile:
             vEmbds = self.vGCN(
                 self.vProjector(self.vFeats), idEmbds, self.graph.edge_index
             )
         else:
             vEmbds = 0
-        if self.tFeats is not None:
+        if cfg.tfile:
             tEmbds = self.tGCN(
                 self.tFeats, idEmbds, self.graph.edge_index
             )
         else:
             tEmbds = 0
-        avgFeats = (vEmbds + tEmbds) / self.num_modality
+        if cfg.afile:
+            aEmbds = self.aGCN(
+                self.aFeats, idEmbds, self.graph.edge_index
+            )
+        else:
+            aEmbds = 0
+        avgFeats = (vEmbds + tEmbds + aEmbds) / self.num_modality
 
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
