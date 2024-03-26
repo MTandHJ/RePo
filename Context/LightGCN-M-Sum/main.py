@@ -67,7 +67,6 @@ class LightGCN(freerec.models.RecSysArch):
             self.aProjector = nn.Linear(self.aFeats.size(1), cfg.embedding_dim)
 
         self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
-        assert self.num_modality > 0
 
         self.reset_parameters()
 
