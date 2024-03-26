@@ -2,7 +2,7 @@
 
 from typing import Dict, Optional, Union
 
-import torch
+import torch, os
 import torch.nn as nn
 import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
@@ -18,6 +18,13 @@ freerec.declare(version='0.7.3')
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--layers", type=int, default=3)
+
+cfg.add_argument("--position", type=str, choices=('ego', 'post'), default="ego")
+
+cfg.add_argument("--afile", type=str, default=None, help="the file of acoustic modality features")
+cfg.add_argument("--vfile", type=str, default="visual_modality.pkl", help="the file of visual modality features")
+cfg.add_argument("--tfile", type=str, default="textual_modality.pkl", help="the file of textual modality features")
+
 cfg.set_defaults(
     description="LightGCN",
     root="../../data",
@@ -36,6 +43,7 @@ class LightGCN(freerec.models.RecSysArch):
 
     def __init__(
         self, fields: FieldModuleList, 
+        data_path: str,
         graph: Data,
         num_layers: int = 3
     ) -> None:
@@ -47,7 +55,42 @@ class LightGCN(freerec.models.RecSysArch):
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
         self.graph = graph
 
+        self.load_feats(data_path)
+
+        if cfg.vfile:
+            self.vProjector = nn.Linear(self.vFeats.size(1), cfg.embedding_dim)
+
+        if cfg.tfile:
+            self.tProjector = nn.Linear(self.tFeats.size(1), cfg.embedding_dim)
+
+        if cfg.afile:
+            self.aProjector = nn.Linear(self.aFeats.size(1), cfg.embedding_dim)
+
+        self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
+        assert self.num_modality > 0
+
         self.reset_parameters()
+
+    def load_feats(self, path: str):
+        from freeplot.utils import import_pickle
+        if cfg.vfile:
+            self.register_buffer(
+                "vFeats", import_pickle(
+                    os.path.join(path, cfg.vfile)
+                )
+            )
+        if cfg.tfile:
+            self.register_buffer(
+                "tFeats", import_pickle(
+                    os.path.join(path, cfg.tfile)
+                )
+            )
+        if cfg.afile:
+            self.register_buffer(
+                "aFeats", import_pickle(
+                    os.path.join(path, cfg.afile)
+                )
+            )
 
     def reset_parameters(self):
         for m in self.modules():
@@ -83,15 +126,29 @@ class LightGCN(freerec.models.RecSysArch):
             self.graph.to(device)
         return super().to(device, dtype, non_blocking)
 
+    def get_mEmbds(self):
+        vEmbds = self.vProjector(self.vFeats) if cfg.vfile else 0.
+        tEmbds = self.tProjector(self.tFeats) if cfg.tfile else 0.
+        aEmbds = self.aProjector(self.aFeats) if cfg.afile else 0.
+        return vEmbds, tEmbds, aEmbds
+
     def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
+
+        if cfg.position == 'ego':
+            vEmbds, tEmbds, aEmbds = self.get_mEmbds()
+            itemEmbs = (itemEmbs + vEmbds + tEmbds + aEmbds) / (self.num_modality + 1)
+
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
         avgFeats = features / (self.num_layers + 1)
         for _ in range(self.num_layers):
             features = self.conv(features, self.graph.adj_t)
             avgFeats += features / (self.num_layers + 1)
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
+        if cfg.position == 'post':
+            vEmbds, tEmbds, aEmbds = self.get_mEmbds()
+            itemFeats = (itemFeats + vEmbds + tEmbds + aEmbds) / (self.num_modality + 1)
         return userFeats, itemFeats
 
     def predict(self, users: torch.Tensor, items: torch.Tensor):
@@ -156,7 +213,10 @@ def main():
         cfg.embedding_dim, ID
     )
     model = LightGCN(
-        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID)), num_layers=cfg.layers
+        tokenizer,
+        data_path=dataset.path,
+        graph=dataset.train().to_graph((USER, ID), (ITEM, ID)), 
+        num_layers=cfg.layers
     )
 
     if cfg.optimizer == 'sgd':

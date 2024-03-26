@@ -1,5 +1,5 @@
 root: ../../data
-dataset: Amazon2023_Toys_10100_Chron
+dataset: AmazonBaby_550_MMRec
 embedding_dim: 64
 num_layers: 3
 epochs: 500
@@ -9,5 +9,6 @@ lr: 1.e-3
 weight_decay: 1.e-4
 fusion_mode: cat
 
-visual_file: visual_modality.pkl
-textual_file: textual_modality.pkl
+vfile: visual_modality.pkl
+tfile: textual_modality.pkl
+afile: Null

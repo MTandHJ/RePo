@@ -29,7 +29,7 @@ cfg.add_argument("--tfile", type=str, default="textual_modality.pkl", help="the 
 cfg.set_defaults(
     description="MMGCN",
     root="../../data",
-    dataset='Amazon2023_Toys_10100_Chron',
+    dataset='AmazonBaby_550_MMRec',
     epochs=500,
     batch_size=1024,
     optimizer='adam',
