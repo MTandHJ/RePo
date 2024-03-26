@@ -4,6 +4,7 @@ from typing import Dict, Optional, Union
 
 import torch, os
 import torch.nn as nn
+import torch.nn.functional as F
 import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
 from torch_geometric.nn import LGConv
@@ -126,9 +127,11 @@ class LightGCN(freerec.models.RecSysArch):
         return super().to(device, dtype, non_blocking)
 
     def get_mEmbds(self):
-        vEmbds = self.vProjector(self.vFeats) if cfg.vfile else 0.
-        tEmbds = self.tProjector(self.tFeats) if cfg.tfile else 0.
-        aEmbds = self.aProjector(self.aFeats) if cfg.afile else 0.
+        # Empirically
+        # MLP -> Normalize much bettern than Normalize -> MLP
+        vEmbds = F.normalize(self.vProjector(self.vFeats)) if cfg.vfile else 0.
+        tEmbds = F.normalize(self.tProjector(self.tFeats)) if cfg.tfile else 0.
+        aEmbds = F.normalize(self.aProjector(self.aFeats)) if cfg.afile else 0.
         return vEmbds, tEmbds, aEmbds
 
     def forward(self):
