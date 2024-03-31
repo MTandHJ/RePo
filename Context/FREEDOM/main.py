@@ -5,13 +5,9 @@ from typing import Dict, Optional, Union
 import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_geometric.transforms as T
 import torchdata.datapipes as dp
-from torch_scatter import scatter_add
-from torch_geometric.data.data import Data
-from torch_geometric.nn import LGConv
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
-from torch_geometric.utils import to_undirected
+from torch_geometric.data import Data
+from torch_geometric.utils import scatter
 
 import freerec
 from freerec.data.fields import FieldModuleList
@@ -62,7 +58,6 @@ class IISide(nn.Module):
 
         self.num_items = num_items
         self.num_layers = num_layers
-        self.conv = LGConv(normalize=False)
         self.load_feats(dataset.path)
 
         if cfg.vfile:
@@ -102,14 +97,10 @@ class IISide(nn.Module):
             mAdj = tAdj
         else:
             raise NotImplementedError("At least visual or texual modality should be given ...")
-        mAdj = mAdj.coalesce()
-        edge_index = mAdj.indices()
-        edge_weight = mAdj.values()
-        graph = Data(x=torch.empty(self.num_items, 0))
-        graph.edge_index = edge_index
-        graph.edge_weight = edge_weight
-        T.ToSparseTensor()(graph)
-        self.mAdj = graph.adj_t.t()
+        self.register_buffer(
+            'mAdj',
+            mAdj.to_sparse_csr()
+        )
         return
 
     def get_knn_graph(self, features: torch.Tensor):
@@ -121,15 +112,12 @@ class IISide(nn.Module):
         """
         features = F.normalize(features, dim=-1) # (N, D)
         sim = features @ features.t() # (N, N)
-        _, cols = torch.topk(sim, cfg.knn_k, dim=-1)
-        del sim
-
-        rows = torch.arange(0, self.num_items).unsqueeze(-1).repeat(1, cfg.knn_k)
-        rows, cols = rows.flatten(), cols.flatten()
-        edge_index = torch.stack(
-            (rows, cols), dim=0
+        edge_index, _ = freerec.graph.get_knn_graph(
+            sim, cfg.knn_k, symmetric=False
         )
-        deg = 1.e-7 + scatter_add(torch.ones_like(rows), rows, dim=0, dim_size=self.num_items)
+
+        rows, cols = edge_index[0], edge_index[1]
+        deg = 1.e-7 + scatter(torch.ones_like(rows), rows, dim=0, dim_size=self.num_items)
         deg_inv_sqrt = deg.pow(-0.5)
         edge_weight = deg_inv_sqrt[rows] * deg_inv_sqrt[cols]
         return torch.sparse_coo_tensor(
@@ -139,7 +127,7 @@ class IISide(nn.Module):
 
     def forward(self, itemEmbds: torch.Tensor):
         for _ in range(self.num_layers):
-            itemEmbds = self.conv(itemEmbds, self.mAdj)
+            itemEmbds = self.mAdj @ itemEmbds
         
         vFeats = self.vProjector(self.vFeats.weight) if cfg.vfile else None
         tFeats = self.tProjector(self.tFeats.weight) if cfg.tfile else None
@@ -149,15 +137,17 @@ class IISide(nn.Module):
 class FREEDOM(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, 
-        dataset: freerec.data.datasets.base.RecDataSet,
+        self,
+        dataset: freerec.data.datasets.RecDataSet,
     ) -> None:
         super().__init__()
 
-        self.fields = fields
-        self.conv = LGConv(False)
-        self.num_layers = cfg.num_ui_layers
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
+        self.num_layers = cfg.num_ui_layers
 
         # I-I Branch
         self.iiSide = IISide( 
@@ -168,9 +158,12 @@ class FREEDOM(freerec.models.RecSysArch):
         )
 
         # U-I Branch
-        self.graph = dataset.train().to_graph((USER, ID), (ITEM, ID))
-        g = dataset.train().to_bigraph((USER, ID), (ITEM, ID))
-        self.interactions = g[g.edge_types[0]].edge_index
+        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        g = dataset.train().to_bigraph(
+            (USER, ID), (ITEM, ID),
+            edge_type='U2I'
+        )
+        self.interactions = g['U2I'].edge_index
         self.sampling_probs = self.normalize_graph(
             self.interactions
         )
@@ -180,8 +173,8 @@ class FREEDOM(freerec.models.RecSysArch):
     def normalize_graph(self, edge_index: torch.Tensor):
         row, col = edge_index[0], edge_index[1]
         edge_weight = torch.ones_like(row)
-        row_sum = 1.e-7 + scatter_add(edge_weight, row, dim=0, dim_size=self.User.count)
-        col_sum = 1.e-7 + scatter_add(edge_weight, col, dim=0, dim_size=self.Item.count)
+        row_sum = 1.e-7 + scatter(edge_weight, row, dim=0, dim_size=self.User.count)
+        col_sum = 1.e-7 + scatter(edge_weight, col, dim=0, dim_size=self.Item.count)
         row_inv_sqrt = row_sum.pow(-0.5)
         col_inv_sqrt = col_sum.pow(-0.5)
         return row_inv_sqrt[row] * col_inv_sqrt[col]
@@ -198,55 +191,45 @@ class FREEDOM(freerec.models.RecSysArch):
         edge_index[1] += self.User.count
 
         num_nodes = self.User.count + self.Item.count
-        edge_index = to_undirected(
+        edge_index = freerec.graph.to_undirected(
             edge_index,
             num_nodes=num_nodes
         )
-        graph = Data(x=torch.empty(num_nodes, 0))
-        graph.edge_index = edge_index
-        T.ToSparseTensor()(graph)
-        self.uiAdj = gcn_norm(
-            graph.adj_t.t(), num_nodes=num_nodes,
-            add_self_loops=False
-        ).to(self.device)
+        edge_index, edge_weight = freerec.graph.to_normalized(
+            edge_index, normalization='sym'
+        )
+        self.uiAdj = freerec.graph.to_adjacency(
+            edge_index, edge_weight,
+            num_nodes=self.User.count + self.Item.count
+        ).to_sparse_csr().to(self.device)
 
     def reset_parameters(self):
         nn.init.xavier_normal_(self.User.embeddings.weight)
         nn.init.xavier_normal_(self.Item.embeddings.weight)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: Data):
-        self.__graph = graph
-        T.ToSparseTensor()(self.__graph)
-        self.__graph.adj = gcn_norm(
-            self.__graph.adj_t.t(), num_nodes=self.User.count + self.Item.count,
-            add_self_loops=False
+    def load_graph(self, graph: Data):
+        edge_index = graph.edge_index
+        edge_index, edge_weight = freerec.graph.to_normalized(
+            edge_index, normalization='sym'
         )
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-            self.iiSide.mAdj = self.iiSide.mAdj.to(device)
-        return super().to(device, dtype, non_blocking)
+        Adj = freerec.graph.to_adjacency(
+            edge_index, edge_weight,
+            num_nodes=self.User.count + self.Item.count
+        ).to_sparse_csr()
+        self.register_buffer(
+            'Adj', Adj
+        )
 
     def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
 
-        A = self.uiAdj if self.training else self.graph.adj
+        A = self.uiAdj if self.training else self.Adj
 
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
         avgFeats = features / (self.num_layers + 1)
         for _ in range(self.num_layers):
-            features = self.conv(features, A)
+            features = A @ features
             avgFeats += features / (self.num_layers + 1)
         
         iiEmbs, vFeats, aFeats = self.iiSide(itemEmbs)
@@ -330,14 +313,7 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
-    model = FREEDOM(
-        tokenizer,
-        dataset=dataset,
-    )
+    model = FREEDOM(dataset=dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(

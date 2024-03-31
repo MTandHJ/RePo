@@ -5,10 +5,7 @@ from typing import Dict, Optional, Union
 import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_geometric.transforms as T
 from torch_geometric.data.data import Data
-from torch_geometric.nn import LGConv
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 import freerec
 from freerec.data.fields import FieldModuleList
@@ -43,20 +40,20 @@ cfg.compile()
 class LightGCN(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, 
-        data_path: str,
-        graph: Data,
-        num_layers: int = 3
+        self,
+        dataset: freerec.data.datasets.RecDataSet
     ) -> None:
         super().__init__()
 
-        self.fields = fields
-        self.conv = LGConv(False)
-        self.num_layers = num_layers
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.graph = graph
+        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        self.num_layers = cfg.layers
 
-        self.load_feats(data_path)
+        self.load_feats(dataset.path)
 
         if cfg.vfile:
             self.vProjector = nn.Linear(self.vFeats.size(1), cfg.embedding_dim)
@@ -70,6 +67,19 @@ class LightGCN(freerec.models.RecSysArch):
         self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
 
         self.reset_parameters()
+
+    def load_graph(self, graph: Data):
+        edge_index = graph.edge_index
+        edge_index, edge_weight = freerec.graph.to_normalized(
+            edge_index, normalization='sym'
+        )
+        Adj = freerec.graph.to_adjacency(
+            edge_index, edge_weight,
+            num_nodes=self.User.count + self.Item.count
+        )
+        self.register_buffer(
+            'Adj', Adj
+        )
 
     def load_feats(self, path: str):
         from freeplot.utils import import_pickle
@@ -104,28 +114,6 @@ class LightGCN(freerec.models.RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: Data):
-        self.__graph = graph
-        T.ToSparseTensor()(self.__graph)
-        self.__graph.adj_t = gcn_norm(
-            self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
-            add_self_loops=False
-        )
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-        return super().to(device, dtype, non_blocking)
-
     def get_mEmbds(self):
         # Empirically
         # MLP -> Normalize much bettern than Normalize -> MLP
@@ -145,7 +133,7 @@ class LightGCN(freerec.models.RecSysArch):
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
         avgFeats = features / (self.num_layers + 1)
         for _ in range(self.num_layers):
-            features = self.conv(features, self.graph.adj_t)
+            features = self.Adj @ features
             avgFeats += features / (self.num_layers + 1)
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         if cfg.position == 'post':
@@ -210,16 +198,7 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
-    model = LightGCN(
-        tokenizer,
-        data_path=dataset.path,
-        graph=dataset.train().to_graph((USER, ID), (ITEM, ID)), 
-        num_layers=cfg.layers
-    )
+    model = LightGCN(dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(

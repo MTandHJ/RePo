@@ -122,7 +122,7 @@ class MMGCN(freerec.models.RecSysArch):
             cfg.embedding_dim, ID
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.load_graph(dataset.to_graph((USER, ID), (ITEM, ID)))
+        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
         self.load_feats(dataset.path)
 
         if cfg.vfile:
