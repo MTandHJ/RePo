@@ -4,8 +4,6 @@ from typing import List
 
 import torch
 import torch.nn as nn
-from torch_sparse import matmul
-from torch_geometric.typing import Adj
 
 
 class PolyPCDConv(nn.Module):
@@ -70,7 +68,7 @@ class PolyPCDConv(nn.Module):
                 f"{poly_base} as a polunomial base is not supported ..."
             )
 
-    def forward(self, x: torch.Tensor, A: Adj):
+    def forward(self, x: torch.Tensor, A: torch.Tensor):
         zs = [self.conv_fn([x], A, 0)]
         for l in range(1, self.L + 1):
             z = self.conv_fn(zs, A, l)
@@ -81,7 +79,7 @@ class PolyPCDConv(nn.Module):
 
 
 def power_conv(
-    zs: List[torch.Tensor], A: Adj, l: int
+    zs: List[torch.Tensor], A: torch.Tensor, l: int
 ):
     r"""
     Polynomial convolution with [Monomial bases](https://en.wikipedia.org/wiki/Monomial).
@@ -97,10 +95,10 @@ def power_conv(
 
     assert len(zs) == l, "len(zs) != l for l != 0"
 
-    return matmul(A, zs[-1], reduce='sum')
+    return A @ zs[-1]
 
 def legendre_conv(
-    zs: List[torch.Tensor], A: Adj, l: int
+    zs: List[torch.Tensor], A: torch.Tensor, l: int
 ):
     r"""
     Polynomial convolution with [Legendre bases](https://en.wikipedia.org/wiki/Legendre_polynomials#Recurrence_relations).
@@ -117,14 +115,14 @@ def legendre_conv(
     assert len(zs) == l, "len(zs) != l for l != 0"
 
     if l == 1:    
-        return matmul(A, zs[-1], reduce='sum')
+        return A @ zs[-1]
     else:
-        part1 = (2 - 1 / l) * matmul(A, zs[-1], reduce='sum')
+        part1 = (2 - 1 / l) * (A @ zs[-1])
         part2 = (1 - 1 / l) * zs[-2]
         return part1 - part2
 
 def chebyshev_conv(
-    zs: List[torch.Tensor], A: Adj, l: int
+    zs: List[torch.Tensor], A: torch.Tensor, l: int
 ):
     r"""
     Polynomial convolution with [Chebyshev bases](https://en.wikipedia.org/wiki/Chebyshev_polynomials).
@@ -141,14 +139,14 @@ def chebyshev_conv(
     assert len(zs) == l, "len(zs) != l for l != 0"
 
     if l == 1:
-        return matmul(A, zs[-1], reduce='sum')
+        return A @ zs[-1]
     else:
-        part1 = 2 * matmul(A, zs[-1], reduce='sum')
+        part1 = 2 * (A @ zs[-1])
         part2 = zs[-2]
         return part1 - part2
 
 def jacobi_conv(
-    zs: List[torch.Tensor], A: Adj, l: int, 
+    zs: List[torch.Tensor], A: torch.Tensor, l: int, 
     alpha: float = 1., beta: float = 1.
 ):
     r"""
@@ -168,7 +166,7 @@ def jacobi_conv(
 
     if l == 1:
         c = (alpha - beta) / 2
-        return c * zs[-1] + (alpha + beta + 2) / 2 * matmul(A, zs[-1], reduce='sum')
+        return c * zs[-1] + (alpha + beta + 2) / 2 * (A @ zs[-1])
     else:
         c0 = 2 * l \
                 * (l + alpha + beta) \
@@ -183,7 +181,7 @@ def jacobi_conv(
                 * (2 * l + alpha + beta)
         
         part1 = c1 * zs[-1]
-        part2 = c2 * matmul(A, zs[-1], reduce='sum')
+        part2 = c2 * (A @ zs[-1])
         part3 = c3 * zs[-2]
 
         return (part1 + part2 - part3) / c0

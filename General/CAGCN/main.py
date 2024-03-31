@@ -4,9 +4,6 @@ from typing import Dict, Optional, Union
 
 import torch, os
 import torch.nn as nn
-import torch_geometric.transforms as T
-from torch_geometric.data import Data, HeteroData
-from torch_geometric.nn import LGConv
 from freeplot.utils import import_pickle, export_pickle
 
 import freerec
@@ -20,7 +17,7 @@ from utils import calc_node_wise_norm, normalize_edge, \
                     common_neighbors_similarity
 
 
-freerec.declare(version="0.4.3")
+freerec.declare(version="0.7.3")
 
 
 cfg = freerec.parser.Parser()
@@ -49,17 +46,21 @@ assert cfg.fusion is True or cfg.fusion is False, "cfg.fusion should be `True' o
 class CAGCN(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, 
-        graph: Data,
+        self,
+        dataset: freerec.data.datasets.RecDataSet,
         num_layers: int = 3
     ) -> None:
         super().__init__()
 
-        self.fields = fields
-        self.conv = LGConv(False)
-        self.num_layers = num_layers
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.graph = graph
+        self.num_layers = cfg.layers
+        self.loadAdj(
+            dataset.train().to_bigraph(edge_type='U2I')['U2I'].edge_index
+        )
 
         self.reset_parameters()
 
@@ -75,14 +76,7 @@ class CAGCN(freerec.models.RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: HeteroData):
-        edge_type = '2'.join((self.User.name, self.Item.name))
-        edge_index = graph[edge_type].edge_index
+    def loadAdj(self, edge_index: torch.Tensor):
         R = torch.sparse_coo_tensor(
             edge_index, torch.ones(edge_index.size(1)),
             size=(self.User.count, self.Item.count)
@@ -126,18 +120,12 @@ class CAGCN(freerec.models.RecSysArch):
             infoLogger("[CAGCN] >>> Use Trend only ...")
             trend = cfg.trend_coeff * trend * edge_norm / trend_norm 
 
-        self.__graph = Data(edge_index=edge_index)
-        self.__graph['edge_weight'] = trend
-        T.ToSparseTensor()(self.__graph)
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-        return super().to(device, dtype, non_blocking)
+        self.register_buffer(
+            'Adj',
+            freerec.graph.to_adjacency(
+                edge_index, trend
+            )
+        )
 
     def forward(self):
         userEmbs = self.User.embeddings.weight
@@ -145,7 +133,7 @@ class CAGCN(freerec.models.RecSysArch):
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
         avgFeats = features / (self.num_layers + 1)
         for _ in range(self.num_layers):
-            features = self.conv(features, self.graph.adj_t)
+            features = self.Adj @ features
             avgFeats += features / (self.num_layers + 1)
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
@@ -207,13 +195,7 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
-    model = CAGCN(
-        tokenizer, dataset.train().to_bigraph((USER, ID), (ITEM, ID)), num_layers=cfg.layers
-    )
+    model = CAGCN(dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
@@ -229,10 +211,10 @@ def main():
     criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForCAGCN(
+        dataset=dataset,
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
-        fields=dataset.fields,
         model=model,
         criterion=criterion,
         optimizer=optimizer,

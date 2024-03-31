@@ -4,9 +4,6 @@ from typing import Dict, Optional, Union
 
 import torch
 import torch.nn as nn
-import torch_geometric.transforms as T
-from torch_geometric.data.data import Data
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 from polyconvs import PolyPCDConv
 
@@ -14,7 +11,9 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.6.3')
+
+freerec.declare(version='0.7.3')
+
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -43,12 +42,15 @@ cfg.compile()
 class PolyPCDGCN(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, 
-        graph: Data,
+        self,
+        dataset: freerec.data.datasets.RecDataSet
     ) -> None:
         super().__init__()
 
-        self.fields = fields
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.conv = PolyPCDConv(
             embedding_dim=cfg.embedding_dim,
             scaling_factor=cfg.scaling_factor,
@@ -56,7 +58,12 @@ class PolyPCDGCN(freerec.models.RecSysArch):
             alpha=cfg.alpha, beta=cfg.beta, fixed=cfg.is_fixed
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.graph = graph
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj(
+                normalization='sym'
+            )
+        )
 
         self.reset_parameters()
 
@@ -72,33 +79,11 @@ class PolyPCDGCN(freerec.models.RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: Data):
-        self.__graph = graph
-        T.ToSparseTensor()(self.__graph)
-        self.__graph.adj_t = gcn_norm(
-            self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
-            add_self_loops=False
-        )
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-        return super().to(device, dtype, non_blocking)
-
     def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
-        avgFeats = self.conv(features, self.graph.adj_t)
+        avgFeats = self.conv(features, self.Adj)
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
         return userFeats, itemFeats
 
@@ -152,13 +137,7 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
-    model = PolyPCDGCN(
-        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID))
-    )
+    model = PolyPCDGCN(dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(

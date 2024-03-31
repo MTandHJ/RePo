@@ -1,21 +1,16 @@
 
 
 from typing import Dict, Optional, Union, List
-from torch_geometric.typing import Adj
 
 import torch
 import torch.nn as nn
-import torch_geometric.transforms as T
-from torch_geometric.data.data import Data
-from torch_geometric.nn.conv.gcn_conv import gcn_norm
-from torch_sparse import matmul
 from functools import partial
 
 import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.4.5')
+freerec.declare(version='0.7.3')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -41,7 +36,7 @@ cfg.compile()
 
 
 def jacobi_conv(
-    zs: List[torch.Tensor], A: Adj, l: int, 
+    zs: List[torch.Tensor], A: torch.Tensor, l: int, 
     alpha: float = 1., beta: float = 1.
 ):
     r"""
@@ -61,7 +56,7 @@ def jacobi_conv(
 
     if l == 1:
         c = (alpha - beta) / 2
-        return c * zs[-1] + (alpha + beta + 2) / 2 * matmul(A, zs[-1], reduce='sum')
+        return c * zs[-1] + (alpha + beta + 2) / 2 * (A @ zs[-1])
     else:
         c0 = 2 * l \
                 * (l + alpha + beta) \
@@ -76,7 +71,7 @@ def jacobi_conv(
                 * (2 * l + alpha + beta)
         
         part1 = c1 * zs[-1]
-        part2 = c2 * matmul(A, zs[-1], reduce='sum')
+        part2 = c2 * (A @ zs[-1])
         part3 = c3 * zs[-2]
 
         return (part1 + part2 - part3) / c0
@@ -105,7 +100,7 @@ class JacobiConv(nn.Module):
 
         self.conv_fn = partial(jacobi_conv, alpha=alpha, beta=beta)
 
-    def forward(self, x: torch.Tensor, A: Adj):
+    def forward(self, x: torch.Tensor, A: torch.Tensor):
         zs = [self.conv_fn([x], A, 0)]
         for l in range(1, self.L + 1):
             z = self.conv_fn(zs, A, l)
@@ -118,20 +113,26 @@ class JacobiConv(nn.Module):
 class JGCF(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, 
-        graph: Data,
+        self, 
+        dataset: freerec.data.datasets.RecDataSet
     ) -> None:
         super().__init__()
 
         self.weight4mid = cfg.weight4mid
 
-        self.fields = fields
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.conv = JacobiConv(
             scaling_factor=cfg.scaling_factor, L=cfg.layers, 
             alpha=cfg.alpha, beta=cfg.beta
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.graph = graph
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj()
+        )
 
         self.reset_parameters()
 
@@ -147,33 +148,11 @@ class JGCF(freerec.models.RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: Data):
-        self.__graph = graph
-        T.ToSparseTensor()(self.__graph)
-        self.__graph.adj_t = gcn_norm(
-            self.__graph.adj_t, num_nodes=self.User.count + self.Item.count,
-            add_self_loops=False
-        )
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-        return super().to(device, dtype, non_blocking)
-
     def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
         features = torch.cat((userEmbs, itemEmbs), dim=0).flatten(1) # N x D
-        avgFeats_low = self.conv(features, self.graph.adj_t)
+        avgFeats_low = self.conv(features, self.Adj)
         avgFeats_mid = self.weight4mid * features - avgFeats_low
         avgFeats = torch.cat((avgFeats_low, avgFeats_mid), dim=1)
         userFeats, itemFeats = torch.split(avgFeats, (self.User.count, self.Item.count))
@@ -236,13 +215,7 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
-    model = JGCF(
-        tokenizer, dataset.train().to_graph((USER, ID), (ITEM, ID))
-    )
+    model = JGCF(dataset)
 
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
@@ -258,10 +231,10 @@ def main():
     criterion = freerec.criterions.BPRLoss()
 
     coach = CoachForJGCF(
+        dataset=dataset,
         trainpipe=trainpipe,
         validpipe=validpipe,
         testpipe=testpipe,
-        fields=dataset.fields,
         model=model,
         criterion=criterion,
         optimizer=optimizer,

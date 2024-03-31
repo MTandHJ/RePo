@@ -2,7 +2,7 @@
 
 import torch
 from torch_geometric.utils import degree, to_undirected, sort_edge_index
-from torch_scatter import scatter_add
+from torch_geometric.utils import scatter
 
 
 def calc_node_wise_norm(
@@ -10,7 +10,7 @@ def calc_node_wise_norm(
     n_users: int, n_items: int
 ):
     assert edge_weight.ndim == 1
-    return scatter_add(
+    return scatter(
         edge_weight, index, 
         dim=0, dim_size=n_users + n_items
     )[index]
