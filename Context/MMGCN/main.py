@@ -122,7 +122,12 @@ class MMGCN(freerec.models.RecSysArch):
             cfg.embedding_dim, ID
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj(
+                normalization='left'
+            )
+        )
         self.load_feats(dataset.path)
 
         if cfg.vfile:
@@ -157,20 +162,6 @@ class MMGCN(freerec.models.RecSysArch):
         assert self.num_modality > 0
 
         self.reset_parameters()
-
-    def load_graph(self, graph: Data):
-        edge_index = graph.edge_index
-        edge_index, edge_weight = freerec.graph.to_normalized(
-            edge_index, normalization='left'
-        )
-        Adj = freerec.graph.to_adjacency(
-            edge_index, edge_weight, 
-            num_nodes=self.User.count + self.Item.count
-        ).to_sparse_csr()
-        self.register_buffer(
-            'Adj',
-            Adj
-        )
 
     def load_feats(self, path: str):
         from freeplot.utils import import_pickle

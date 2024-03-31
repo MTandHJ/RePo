@@ -44,7 +44,10 @@ class LightGCN(freerec.models.RecSysArch):
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
         self.num_layers = cfg.layers
-        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj()
+        )
 
         self.reset_parameters()
 
@@ -59,19 +62,6 @@ class LightGCN(freerec.models.RecSysArch):
             elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
-
-    def load_graph(self, graph: Data):
-        edge_index = graph.edge_index
-        edge_index, edge_weight = freerec.graph.to_normalized(
-            edge_index, normalization='sym'
-        )
-        Adj = freerec.graph.to_adjacency(
-            edge_index, edge_weight,
-            num_nodes=self.User.count + self.Item.count
-        ).to_sparse_csr()
-        self.register_buffer(
-            'Adj', Adj
-        )
 
     def forward(self):
         userEmbs = self.User.embeddings.weight

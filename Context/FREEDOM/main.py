@@ -158,7 +158,10 @@ class FREEDOM(freerec.models.RecSysArch):
         )
 
         # U-I Branch
-        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj()
+        )
         g = dataset.train().to_bigraph(
             (USER, ID), (ITEM, ID),
             edge_type='U2I'
@@ -206,19 +209,6 @@ class FREEDOM(freerec.models.RecSysArch):
     def reset_parameters(self):
         nn.init.xavier_normal_(self.User.embeddings.weight)
         nn.init.xavier_normal_(self.Item.embeddings.weight)
-
-    def load_graph(self, graph: Data):
-        edge_index = graph.edge_index
-        edge_index, edge_weight = freerec.graph.to_normalized(
-            edge_index, normalization='sym'
-        )
-        Adj = freerec.graph.to_adjacency(
-            edge_index, edge_weight,
-            num_nodes=self.User.count + self.Item.count
-        ).to_sparse_csr()
-        self.register_buffer(
-            'Adj', Adj
-        )
 
     def forward(self):
         userEmbs = self.User.embeddings.weight
@@ -318,12 +308,14 @@ def main():
     if cfg.optimizer == 'sgd':
         optimizer = torch.optim.SGD(
             model.parameters(), lr=cfg.lr, 
+            weight_decay=cfg.weight_decay,
             momentum=cfg.momentum,
             nesterov=cfg.nesterov,
         )
     elif cfg.optimizer == 'adam':
         optimizer = torch.optim.Adam(
             model.parameters(), lr=cfg.lr,
+            weight_decay=cfg.weight_decay,
             betas=(cfg.beta1, cfg.beta2),
         )
     criterion = freerec.criterions.BPRLoss()

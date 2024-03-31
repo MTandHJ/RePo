@@ -50,7 +50,10 @@ class LightGCN(freerec.models.RecSysArch):
             cfg.embedding_dim, ID
         )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.load_graph(dataset.train().to_graph((USER, ID), (ITEM, ID)))
+        self.register_buffer(
+            'Adj',
+            dataset.train().to_normalized_uiAdj()
+        )
         self.num_layers = cfg.layers
 
         self.load_feats(dataset.path)
@@ -67,19 +70,6 @@ class LightGCN(freerec.models.RecSysArch):
         self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
 
         self.reset_parameters()
-
-    def load_graph(self, graph: Data):
-        edge_index = graph.edge_index
-        edge_index, edge_weight = freerec.graph.to_normalized(
-            edge_index, normalization='sym'
-        )
-        Adj = freerec.graph.to_adjacency(
-            edge_index, edge_weight,
-            num_nodes=self.User.count + self.Item.count
-        )
-        self.register_buffer(
-            'Adj', Adj
-        )
 
     def load_feats(self, path: str):
         from freeplot.utils import import_pickle
