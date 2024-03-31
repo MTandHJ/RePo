@@ -11,9 +11,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-
-freerec.declare(version='0.7.3')
-
+freerec.declare(version='0.7.5')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -60,7 +58,7 @@ class PolyPCDGCN(freerec.models.RecSysArch):
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
         self.register_buffer(
             'Adj',
-            dataset.train().to_normalized_uiAdj(
+            dataset.train().to_normalized_adj(
                 normalization='sym'
             )
         )

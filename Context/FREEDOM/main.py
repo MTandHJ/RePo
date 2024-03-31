@@ -13,7 +13,7 @@ import freerec
 from freerec.data.fields import FieldModuleList
 from freerec.data.tags import USER, SESSION, ITEM, TIMESTAMP, ID
 
-freerec.declare(version='0.7.3')
+freerec.declare(version='0.7.5')
 
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
@@ -160,7 +160,7 @@ class FREEDOM(freerec.models.RecSysArch):
         # U-I Branch
         self.register_buffer(
             'Adj',
-            dataset.train().to_normalized_uiAdj()
+            dataset.train().to_normalized_adj()
         )
         g = dataset.train().to_bigraph(
             (USER, ID), (ITEM, ID),

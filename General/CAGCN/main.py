@@ -17,7 +17,7 @@ from utils import calc_node_wise_norm, normalize_edge, \
                     common_neighbors_similarity
 
 
-freerec.declare(version="0.7.3")
+freerec.declare(version="0.7.5")
 
 
 cfg = freerec.parser.Parser()
