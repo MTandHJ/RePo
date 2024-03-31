@@ -5,8 +5,7 @@ from typing import Dict, Optional, Union
 import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import MessagePassing
-from torch_geometric.data import Data, HeteroData
+from torch_geometric.data import Data
 
 import freerec
 from freerec.data.fields import FieldModuleList
@@ -40,7 +39,7 @@ cfg.set_defaults(
 cfg.compile()
 
 
-class GraphConvNet(MessagePassing):
+class GraphConvNet(nn.Module):
 
     def __init__(
         self, 
@@ -49,9 +48,8 @@ class GraphConvNet(MessagePassing):
         embedding_dim: int,
         num_layers: int = 3,
         fusion_mode: str = "cat",
-        aggr: str = "mean",
     ):
-        super().__init__(aggr)
+        super().__init__()
 
         self.register_parameter(
             'mUser',
@@ -91,7 +89,7 @@ class GraphConvNet(MessagePassing):
                 nn.Linear(embedding_dim, embedding_dim),
             ])
 
-    def forward(self, mItem, idEmbds, edge_index: torch.Tensor):
+    def forward(self, mItem, idEmbds, A: torch.Tensor):
         x = torch.cat((self.mUser, mItem), dim=0) # (N, F_dim)
         x = F.normalize(x, dim=-1)
 
@@ -100,7 +98,7 @@ class GraphConvNet(MessagePassing):
             linear2 = self.m2id_layers[l]
             linear3 = self.fusion_layers[l]
 
-            h = self.propagate(x=linear1(x), edge_index=edge_index) # F/E_dim -> F/E_dim
+            h = A @ linear1(x) # F/E_dim -> F/E_dim
             x_hat = self.act(linear2(x)) + idEmbds # F/E_dim -> E_dim
             if self.fusion_mode == "cat":
                 x_hat = torch.cat((h, x_hat), dim=-1) # (F/E_dim + E_dim)
@@ -110,23 +108,22 @@ class GraphConvNet(MessagePassing):
         
         return x
 
-    def message(self, x_j: torch.Tensor):
-        return x_j
-    
-    def update(self, outs: torch.Tensor):
-        return self.act(outs)
-
 
 class MMGCN(freerec.models.RecSysArch):
 
     def __init__(
-        self, fields: FieldModuleList, data_path: str, graph: Data,
+        self, 
+        dataset: freerec.data.datasets.base.RecDataSet,
     ) -> None:
         super().__init__()
 
-        self.fields = fields
+        self.fields = FieldModuleList(dataset.fields)
+        self.fields.embed(
+            cfg.embedding_dim, ID
+        )
         self.User, self.Item = self.fields[USER, ID], self.fields[ITEM, ID]
-        self.load_feats(data_path)
+        self.load_graph(dataset.to_graph((USER, ID), (ITEM, ID)))
+        self.load_feats(dataset.path)
 
         if cfg.vfile:
             self.vGCN = GraphConvNet(
@@ -159,9 +156,21 @@ class MMGCN(freerec.models.RecSysArch):
         self.num_modality = len([file_ for file_ in (cfg.afile, cfg.vfile, cfg.tfile) if file_])
         assert self.num_modality > 0
 
-        self.graph = graph
-
         self.reset_parameters()
+
+    def load_graph(self, graph: Data):
+        edge_index = graph.edge_index
+        edge_index, edge_weight = freerec.graph.to_normalized(
+            edge_index, normalization='left'
+        )
+        Adj = freerec.graph.to_adjacency(
+            edge_index, edge_weight, 
+            num_nodes=self.User.count + self.Item.count
+        ).to_sparse_csr()
+        self.register_buffer(
+            'Adj',
+            Adj
+        )
 
     def load_feats(self, path: str):
         from freeplot.utils import import_pickle
@@ -196,23 +205,6 @@ class MMGCN(freerec.models.RecSysArch):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
 
-    @property
-    def graph(self):
-        return self.__graph
-
-    @graph.setter
-    def graph(self, graph: HeteroData):
-        self.__graph = graph
-
-    def to(
-        self, device: Optional[Union[int, torch.device]] = None, 
-        dtype: Optional[Union[torch.dtype, str]] = None, 
-        non_blocking: bool = False
-    ):
-        if device:
-            self.graph.to(device)
-        return super().to(device, dtype, non_blocking)
-
     def forward(self):
         userEmbs = self.User.embeddings.weight
         itemEmbs = self.Item.embeddings.weight
@@ -220,19 +212,19 @@ class MMGCN(freerec.models.RecSysArch):
 
         if cfg.vfile:
             vEmbds = self.vGCN(
-                self.vProjector(self.vFeats), idEmbds, self.graph.edge_index
+                self.vProjector(self.vFeats), idEmbds, self.Adj
             )
         else:
             vEmbds = 0
         if cfg.tfile:
             tEmbds = self.tGCN(
-                self.tFeats, idEmbds, self.graph.edge_index
+                self.tFeats, idEmbds, self.Adj
             )
         else:
             tEmbds = 0
         if cfg.afile:
             aEmbds = self.aGCN(
-                self.aFeats, idEmbds, self.graph.edge_index
+                self.aFeats, idEmbds, self.Adj
             )
         else:
             aEmbds = 0
@@ -298,12 +290,8 @@ def main():
         dataset, batch_size=512, ranking=cfg.ranking
     )
 
-    tokenizer = FieldModuleList(dataset.fields)
-    tokenizer.embed(
-        cfg.embedding_dim, ID
-    )
     model = MMGCN(
-        tokenizer, dataset.path, dataset.train().to_graph((USER, ID), (ITEM, ID))
+        dataset
     )
 
     if cfg.optimizer == 'sgd':
