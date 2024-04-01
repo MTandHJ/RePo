@@ -2,13 +2,15 @@ root: ../../data
 dataset: AmazonBaby_550_MMRec
 embedding_dim: 64
 num_layers: 3
-epochs: 500
+epochs: 50
 batch_size: 1024
 optimizer: adam
-lr: 1.e-3
-weight_decay: 1.e-4
-fusion_mode: cat
+lr: 1.e-4
+weight_decay: 1.e-5
+fusion_mode: add
 
 vfile: visual_modality.pkl
 tfile: textual_modality.pkl
 afile: Null
+
+eval_freq: 1

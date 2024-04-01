@@ -5,7 +5,7 @@ from typing import Dict, Optional, Union
 import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.data import Data
+import torchdata.datapipes as dp
 
 import freerec
 from freerec.data.fields import FieldModuleList
@@ -16,7 +16,7 @@ freerec.declare(version="0.7.5")
 cfg = freerec.parser.Parser()
 cfg.add_argument("-eb", "--embedding-dim", type=int, default=64)
 cfg.add_argument("--num-layers", type=int, default=3)
-cfg.add_argument("--fusion-mode", type=str, choices=('cat', 'add'), default="cat")
+cfg.add_argument("--fusion-mode", type=str, choices=('cat', 'add'), default="add")
 
 cfg.add_argument("--afile", type=str, default=None, help="the file of acoustic modality features")
 cfg.add_argument("--vfile", type=str, default="visual_modality.pkl", help="the file of visual modality features")
@@ -96,7 +96,7 @@ class GraphConvNet(nn.Module):
             linear2 = self.m2id_layers[l]
             linear3 = self.fusion_layers[l]
 
-            h = A @ linear1(x) # F/E_dim -> F/E_dim
+            h = self.act(A @ linear1(x)) # F/E_dim -> F/E_dim
             x_hat = self.act(linear2(x)) + idEmbds # F/E_dim -> E_dim
             if self.fusion_mode == "cat":
                 x_hat = torch.cat((h, x_hat), dim=-1) # (F/E_dim + E_dim)
@@ -189,7 +189,7 @@ class MMGCN(freerec.models.RecSysArch):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0.)
             elif isinstance(m, nn.Embedding):
-                nn.init.normal_(m.weight, std=1.e-4)
+                nn.init.xavier_normal_(m.weight)
             elif isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
                 nn.init.constant_(m.weight, 1.)
                 nn.init.constant_(m.bias, 0.)
@@ -238,9 +238,8 @@ class CoachForMMGCN(freerec.launcher.GenCoach):
 
     def reg_loss(self, userEmbds, itemEmbds):
         userEmbds, itemEmbds = userEmbds.flatten(1), itemEmbds.flatten(1)
-        loss = userEmbds.pow(2).sum() + itemEmbds.pow(2).sum()
-        loss = loss / userEmbds.size(0)
-        return loss / 2
+        loss = userEmbds.pow(2).mean() + itemEmbds.pow(2).mean()
+        return loss
 
     def train_per_epoch(self, epoch: int):
         for data in self.dataloader:
@@ -259,6 +258,13 @@ class CoachForMMGCN(freerec.launcher.GenCoach):
             
             self.monitor(loss.item(), n=scores.size(0), mode="mean", prefix='train', pool=['LOSS'])
 
+@dp.functional_datapipe("gen_train_pair_uniform_sampling_")
+class GenTrainShuffleSampler(freerec.data.postprocessing.sampler.GenTrainUniformSampler):
+
+    def __iter__(self):
+        for user, pos in self.source:
+            if self._check(user):
+                yield [user, pos, self._sample_neg(user)]
 
 def main():
 
@@ -266,9 +272,9 @@ def main():
     User, Item = dataset.fields[USER, ID], dataset.fields[ITEM, ID]
 
     # trainpipe
-    trainpipe = freerec.data.postprocessing.source.RandomIDs(
-        field=User, datasize=dataset.train().datasize
-    ).sharding_filter().gen_train_uniform_sampling_(
+    trainpipe = freerec.data.postprocessing.source.RandomShuffledSource(
+        source=dataset.train().to_pairs()
+    ).sharding_filter().gen_train_pair_uniform_sampling_(
         dataset, num_negatives=1
     ).batch(cfg.batch_size).column_().tensor_()
 
