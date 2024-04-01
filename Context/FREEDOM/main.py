@@ -6,7 +6,6 @@ import torch, os
 import torch.nn as nn
 import torch.nn.functional as F
 import torchdata.datapipes as dp
-from torch_geometric.data import Data
 from torch_geometric.utils import scatter
 
 import freerec
