@@ -10,8 +10,8 @@ weight_decay: 0.
 num_ui_layers: 2
 num_ii_layers: 1
 
-weight4mAdj: 0.1
-weight4modality: 1.e-3
+weight4mAdj: 0.3
+weight4modality: 0.
 sampling_ratio: 0.1
 
 vfile: visual_modality.pkl
