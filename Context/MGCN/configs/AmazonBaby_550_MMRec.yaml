@@ -1,0 +1,17 @@
+root: ../../data
+dataset: AmazonBaby_550_MMRec
+embedding_dim: 64
+epochs: 500
+batch_size: 2048
+optimizer: adam
+lr: 1.e-3
+weight_decay: 1.e-6
+
+num_layers: 2
+knn_k: 10
+weight4cl: 0.01
+temperature: 0.2
+
+afile: Null
+vfile: visual_modality.pkl
+tfile: textual_modality.pkl
